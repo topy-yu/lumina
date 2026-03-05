@@ -24,7 +24,6 @@ class SettingsPage(QWidget):
         self._config_service = config_service
 
         self._library_edit = QLineEdit()
-        self._db_edit = QLineEdit()
         self._status_label = QLabel()
 
         self._build_ui()
@@ -41,13 +40,6 @@ class SettingsPage(QWidget):
         lib_row.addWidget(lib_pick)
         form.addRow("Photo library folder", lib_row)
 
-        db_row = QHBoxLayout()
-        db_row.addWidget(self._db_edit)
-        db_pick = QPushButton("Browse...")
-        db_pick.clicked.connect(self._choose_db_file)  # type: ignore[arg-type]
-        db_row.addWidget(db_pick)
-        form.addRow("Database file", db_row)
-
         save_btn = QPushButton("Save settings")
         save_btn.clicked.connect(self.save_settings)  # type: ignore[arg-type]
 
@@ -61,25 +53,17 @@ class SettingsPage(QWidget):
         if folder:
             self._library_edit.setText(folder)
 
-    def _choose_db_file(self) -> None:
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Select SQLite database file",
-            filter="SQLite Database (*.db *.sqlite);;All Files (*)",
-        )
-        if file_path:
-            self._db_edit.setText(file_path)
-
     def load_from_config(self) -> None:
-        config = self._config_service.load()
+        config = self._config_service.normalize(self._config_service.load())
         self._library_edit.setText(config.library_root)
-        self._db_edit.setText(config.db_path)
         self._status_label.setText("Ready.")
 
     def current_config(self) -> AppConfig:
-        return AppConfig(
-            library_root=self._library_edit.text().strip(),
-            db_path=self._db_edit.text().strip(),
+        return self._config_service.normalize(
+            AppConfig(
+                library_root=self._library_edit.text().strip(),
+                db_path="",
+            )
         )
 
     def save_settings(self) -> None:

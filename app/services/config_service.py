@@ -13,29 +13,35 @@ class AppConfig:
 
 
 class ConfigService:
+    DB_FILENAME = "lumina.db"
+
     def __init__(self, config_file: Path | None = None) -> None:
-        default = Path.home() / ".lumina" / "config.json"
+        # Default: config.json in the lumina project root (parent of app/)
+        _project_root = Path(__file__).resolve().parent.parent.parent
+        default = _project_root / "config.json"
         self._config_file = config_file or default
 
     def load(self) -> AppConfig:
         if not self._config_file.exists():
             return AppConfig()
         data = json.loads(self._config_file.read_text(encoding="utf-8"))
-        return AppConfig(
+        config = AppConfig(
             library_root=data.get("library_root", ""),
+            
             db_path=data.get("db_path", ""),
         )
+        return self.normalize(config)
 
     def save(self, config: AppConfig) -> None:
+        config = self.normalize(config)
         self._config_file.parent.mkdir(parents=True, exist_ok=True)
         self._config_file.write_text(json.dumps(asdict(config), indent=2), encoding="utf-8")
 
     def validate(self, config: AppConfig) -> list[str]:
+        config = self.normalize(config)
         errors: list[str] = []
         if not config.library_root:
             errors.append("Photo library folder is required.")
-        if not config.db_path:
-            errors.append("Database file is required.")
         if errors:
             return errors
 
@@ -63,6 +69,11 @@ class ConfigService:
             errors.append("Database parent folder is not writable.")
 
         return errors
+
+    def normalize(self, config: AppConfig) -> AppConfig:
+        library_root = config.library_root.strip()
+        db_path = str(Path(library_root) / self.DB_FILENAME) if library_root else ""
+        return AppConfig(library_root=library_root, db_path=db_path)
 
     @staticmethod
     def _is_writable_directory(path: Path) -> bool:
