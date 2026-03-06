@@ -131,22 +131,22 @@ class ImportPage(QWidget):
             "Select photos",
             filter="Images (*.jpg *.jpeg *.png *.webp *.heic *.tif *.tiff *.bmp);;All Files (*)",
         )
-        for file in files:
-            path = Path(file)
-            self._source_list.addItem(str(path))
-            self._add_folder_option(path.parent)
+        paths = [Path(file) for file in files]
+        self._add_source_paths(paths)
 
     def _add_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Select folder to scan for photos")
         if not folder:
             return
         folder_path = Path(folder)
-        self._add_folder_option(folder_path)
-        for path in self._import_service.collect_supported_files(Path(folder)):
-            self._source_list.addItem(str(path))
+        self._add_folder_tree_options(folder_path)
+        paths = self._import_service.collect_supported_files(folder_path)
+        self._add_source_paths(paths)
 
     def _run_import(self) -> None:
-        file_paths = [Path(self._source_list.item(i).text()) for i in range(self._source_list.count())]
+        file_paths = self._deduplicate_paths(
+            [Path(self._source_list.item(i).text()) for i in range(self._source_list.count())]
+        )
         if not file_paths:
             QMessageBox.information(self, "No files", "Please add files or a folder first.")
             return
@@ -238,6 +238,37 @@ class ImportPage(QWidget):
         resolved = str(folder.resolve(strict=False))
         if self._folder_combo.findText(resolved) == -1:
             self._folder_combo.addItem(resolved)
+
+    def _add_folder_tree_options(self, root: Path) -> None:
+        self._add_folder_option(root)
+        for path in root.rglob("*"):
+            if path.is_dir():
+                self._add_folder_option(path)
+
+    def _add_source_paths(self, paths: list[Path]) -> None:
+        seen = {
+            str(Path(self._source_list.item(i).text()).resolve(strict=False))
+            for i in range(self._source_list.count())
+        }
+        for path in paths:
+            resolved = str(path.resolve(strict=False))
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            self._source_list.addItem(str(path))
+            self._add_folder_option(path.parent)
+
+    @staticmethod
+    def _deduplicate_paths(paths: list[Path]) -> list[Path]:
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for path in paths:
+            resolved = str(path.resolve(strict=False))
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            unique.append(path)
+        return unique
 
     @staticmethod
     def _parse_tags(text: str) -> list[str]:
