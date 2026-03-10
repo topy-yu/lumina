@@ -157,3 +157,35 @@ def test_import_without_folder_tags_keeps_empty_tags(tmp_path: Path) -> None:
     record = PhotoRepository().get_photo(db_path, hashlib.md5(b"plain-content").hexdigest())
     assert record is not None
     assert json.loads(record.tags) == []
+    assert json.loads(record.autotags) == []
+
+
+def test_import_uses_folder_capture_time_fallback(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    root = src / "root"
+    sub = root / "sub"
+    other = src / "other"
+    lib = tmp_path / "lib"
+    lib.mkdir()
+
+    missing_in_root = root / "a.jpg"
+    missing_in_sub = sub / "b.jpg"
+    missing_other = other / "c.jpg"
+    _write_file(missing_in_root, b"a-content")
+    _write_file(missing_in_sub, b"b-content")
+    _write_file(missing_other, b"c-content")
+
+    metadata = FakeMetadataService({"a.jpg": None, "b.jpg": None, "c.jpg": None})
+    service = PhotoImportService(PhotoRepository(), metadata, FileService())
+    summary = service.import_files(
+        [missing_in_root, missing_in_sub, missing_other],
+        AppConfig(library_root=str(lib)),
+        folder_capture_time_map={str(root): "2023-01-02 03:04:05"},
+    )
+
+    assert summary.total == 3
+    assert summary.imported == 2
+    assert summary.skipped_no_capture_time == 1
+    imported = [row for row in summary.results if row.status == "imported"]
+    assert len(imported) == 2
+    assert all(row.reason == "capture time from folder rule" for row in imported)

@@ -10,6 +10,9 @@ from pathlib import Path
 class AppConfig:
     library_root: str = ""
     db_path: str = ""
+    ai_provider: str = "ollama"
+    ai_api_url: str = "http://127.0.0.1:11434"
+    ai_model_name: str = ""
 
 
 class ConfigService:
@@ -27,8 +30,10 @@ class ConfigService:
         data = json.loads(self._config_file.read_text(encoding="utf-8"))
         config = AppConfig(
             library_root=data.get("library_root", ""),
-            
             db_path=data.get("db_path", ""),
+            ai_provider=data.get("ai_provider", "ollama"),
+            ai_api_url=data.get("ai_api_url", "http://127.0.0.1:11434"),
+            ai_model_name=data.get("ai_model_name", ""),
         )
         return self.normalize(config)
 
@@ -73,7 +78,13 @@ class ConfigService:
     def normalize(self, config: AppConfig) -> AppConfig:
         library_root = config.library_root.strip()
         db_path = str(Path(library_root) / self.DB_FILENAME) if library_root else ""
-        return AppConfig(library_root=library_root, db_path=db_path)
+        return AppConfig(
+            library_root=library_root,
+            db_path=db_path,
+            ai_provider=config.ai_provider or "ollama",
+            ai_api_url=config.ai_api_url or "http://127.0.0.1:11434",
+            ai_model_name=config.ai_model_name,
+        )
 
     @staticmethod
     def _is_writable_directory(path: Path) -> bool:

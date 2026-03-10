@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -23,8 +25,39 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.services.config_service import ConfigService
+from app.services.config_service import AppConfig, ConfigService
 from app.services.photo_import_service import FileImportResult, ImportSummary, PhotoImportService
+
+
+class _ImportWorker(QThread):
+    progress = Signal(str)
+    import_done = Signal(object)
+
+    def __init__(
+        self,
+        import_service: PhotoImportService,
+        files: list[Path],
+        config: AppConfig,
+        folder_tags_map: dict[str, list[str]],
+        folder_capture_time_map: dict[str, str],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._import_service = import_service
+        self._files = files
+        self._config = config
+        self._folder_tags_map = folder_tags_map
+        self._folder_capture_time_map = folder_capture_time_map
+
+    def run(self) -> None:
+        summary = self._import_service.import_files(
+            self._files,
+            self._config,
+            folder_tags_map=self._folder_tags_map,
+            folder_capture_time_map=self._folder_capture_time_map,
+            progress=self.progress.emit,
+        )
+        self.import_done.emit(summary)
 
 
 class ImportPage(QWidget):
@@ -39,31 +72,36 @@ class ImportPage(QWidget):
         self._import_service = import_service
         self._latest_summary: ImportSummary | None = None
         self._latest_library_root: Path | None = None
+        self._import_worker: _ImportWorker | None = None
         self._folder_tag_rules: dict[str, list[str]] = {}
+        self._folder_capture_time_rules: dict[str, str] = {}
 
         self._source_list = QListWidget()
         self._folder_combo = QComboBox()
         self._folder_combo.setMinimumWidth(260)
         self._tags_input = QLineEdit()
         self._tags_input.setPlaceholderText("tag1, tag2, ...")
+        self._capture_time_input = QLineEdit()
+        self._capture_time_input.setPlaceholderText("YYYY-MM-DD HH:MM:SS")
         self._rules_list = QListWidget()
         self._rules_list.setMaximumHeight(96)
         self._summary = QTextEdit()
         self._summary.setReadOnly(True)
-        self._details_table = QTableWidget(0, 6)
+        self._details_table = QTableWidget(0, 7)
         self._details_table.setHorizontalHeaderLabels(
-            ["Status", "Source", "Stored Path", "Tags", "Reason", "Actions"]
+            ["Status", "Source", "Stored Path", "Tags", "Auto Tags", "Reason", "Actions"]
         )
         self._details_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._details_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self._details_table.verticalHeader().setVisible(False)
         self._details_table.horizontalHeader().setStretchLastSection(True)
         self._details_table.setColumnWidth(0, 130)
-        self._details_table.setColumnWidth(1, 280)
-        self._details_table.setColumnWidth(2, 220)
-        self._details_table.setColumnWidth(3, 180)
-        self._details_table.setColumnWidth(4, 220)
-        self._details_table.setColumnWidth(5, 280)
+        self._details_table.setColumnWidth(1, 250)
+        self._details_table.setColumnWidth(2, 200)
+        self._details_table.setColumnWidth(3, 150)
+        self._details_table.setColumnWidth(4, 180)
+        self._details_table.setColumnWidth(5, 200)
+        self._details_table.setColumnWidth(6, 280)
         self._status = QLabel("Add files or folders to begin.")
 
         self._import_button = QPushButton("Import")
@@ -85,8 +123,8 @@ class ImportPage(QWidget):
         add_dir_btn.clicked.connect(self._add_folder)  # type: ignore[arg-type]
         clear_btn = QPushButton("Clear")
         clear_btn.clicked.connect(self._source_list.clear)  # type: ignore[arg-type]
-        apply_rule_btn = QPushButton("Apply tags to folder")
-        apply_rule_btn.clicked.connect(self._apply_folder_tags_rule)  # type: ignore[arg-type]
+        apply_rule_btn = QPushButton("Apply folder rule")
+        apply_rule_btn.clicked.connect(self._apply_folder_rule)  # type: ignore[arg-type]
         remove_rule_btn = QPushButton("Remove selected rule")
         remove_rule_btn.clicked.connect(self._remove_selected_rule)  # type: ignore[arg-type]
         clear_rules_btn = QPushButton("Clear rules")
@@ -103,6 +141,8 @@ class ImportPage(QWidget):
         tags_controls.addWidget(self._folder_combo)
         tags_controls.addWidget(QLabel("Tags:"))
         tags_controls.addWidget(self._tags_input)
+        tags_controls.addWidget(QLabel("Capture time fallback:"))
+        tags_controls.addWidget(self._capture_time_input)
         tags_controls.addWidget(apply_rule_btn)
         tags_controls.addWidget(remove_rule_btn)
         tags_controls.addWidget(clear_rules_btn)
@@ -144,6 +184,8 @@ class ImportPage(QWidget):
         self._add_source_paths(paths)
 
     def _run_import(self) -> None:
+        if self._import_worker is not None:
+            return
         file_paths = self._deduplicate_paths(
             [Path(self._source_list.item(i).text()) for i in range(self._source_list.count())]
         )
@@ -158,16 +200,32 @@ class ImportPage(QWidget):
             self.refresh_enabled_state()
             return
 
-        folder_tags_map = self._collect_valid_folder_rules()
-        summary = self._import_service.import_files(
-            file_paths,
-            config,
-            folder_tags_map=folder_tags_map,
-        )
-        self._latest_summary = summary
+        folder_tags_map, folder_capture_time_map = self._collect_valid_folder_rules()
+
+        self._import_button.setEnabled(False)
+        self._status.setText("Importing...")
         self._latest_library_root = Path(config.library_root)
-        self._summary.setPlainText(self._format_summary(summary))
-        self._populate_details(summary, Path(config.library_root))
+
+        self._import_worker = _ImportWorker(
+            self._import_service, file_paths, config,
+            folder_tags_map, folder_capture_time_map, self,
+        )
+        self._import_worker.progress.connect(self._on_import_progress)  # type: ignore[arg-type]
+        self._import_worker.import_done.connect(self._on_import_done)  # type: ignore[arg-type]
+        self._import_worker.start()
+
+    def _on_import_progress(self, message: str) -> None:
+        self._status.setText(message)
+
+    def _on_import_done(self, result: object) -> None:
+        assert isinstance(result, ImportSummary)
+        self._import_worker = None
+        self._import_button.setEnabled(True)
+
+        self._latest_summary = result
+        assert self._latest_library_root is not None
+        self._summary.setPlainText(self._format_summary(result))
+        self._populate_details(result, self._latest_library_root)
         self._refresh_duplicate_delete_state()
         self._status.setText("Import finished.")
 
@@ -188,8 +246,9 @@ class ImportPage(QWidget):
     def _format_result(result: FileImportResult) -> str:
         rel = result.relative_path if result.relative_path else "-"
         tags = ", ".join(result.applied_tags) if result.applied_tags else "-"
+        auto = ", ".join(result.autotags) if result.autotags else "-"
         reason = result.reason if result.reason else "-"
-        return f"[{result.status}] {result.source} -> {rel} | tags={tags} | {reason}"
+        return f"[{result.status}] {result.source} -> {rel} | tags={tags} | autotags={auto} | {reason}"
 
     def _populate_details(self, summary: ImportSummary, library_root: Path) -> None:
         self._details_table.setRowCount(len(summary.results))
@@ -198,13 +257,20 @@ class ImportPage(QWidget):
             source_item = QTableWidgetItem(result.source)
             stored_item = QTableWidgetItem(result.relative_path or "-")
             tags_item = QTableWidgetItem(", ".join(result.applied_tags) if result.applied_tags else "-")
+            autotags_item = QTableWidgetItem(", ".join(result.autotags) if result.autotags else "-")
             reason_item = QTableWidgetItem(result.reason or "-")
+            source_item.setToolTip(result.source)
+            if result.relative_path:
+                stored_item.setToolTip(result.relative_path)
+            if result.autotags:
+                autotags_item.setToolTip(", ".join(result.autotags))
 
             self._details_table.setItem(row, 0, status_item)
             self._details_table.setItem(row, 1, source_item)
             self._details_table.setItem(row, 2, stored_item)
             self._details_table.setItem(row, 3, tags_item)
-            self._details_table.setItem(row, 4, reason_item)
+            self._details_table.setItem(row, 4, autotags_item)
+            self._details_table.setItem(row, 5, reason_item)
 
             actions = QWidget()
             actions_layout = QHBoxLayout(actions)
@@ -232,7 +298,7 @@ class ImportPage(QWidget):
             actions_layout.addWidget(preview_btn)
             actions_layout.addWidget(rename_btn)
             actions_layout.addWidget(delete_btn)
-            self._details_table.setCellWidget(row, 5, actions)
+            self._details_table.setCellWidget(row, 6, actions)
 
     def _add_folder_option(self, folder: Path) -> None:
         resolved = str(folder.resolve(strict=False))
@@ -282,53 +348,104 @@ class ImportPage(QWidget):
             normalized.append(clean)
         return normalized
 
-    def _apply_folder_tags_rule(self) -> None:
+    @staticmethod
+    def _parse_capture_time(text: str) -> str | None:
+        if not text.strip():
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.strip())
+        except ValueError:
+            return None
+        return parsed.isoformat(sep=" ", timespec="seconds")
+
+    def _apply_folder_rule(self) -> None:
         folder = self._folder_combo.currentText().strip()
         if not folder:
             QMessageBox.information(self, "Folder required", "Please add/select a folder first.")
             return
         tags = self._parse_tags(self._tags_input.text())
-        if not tags:
-            QMessageBox.information(self, "Tags required", "Please input at least one tag.")
+        capture_time = self._parse_capture_time(self._capture_time_input.text())
+        if not tags and not capture_time:
+            QMessageBox.information(
+                self,
+                "Rule required",
+                "Please input at least one tag or a capture time fallback.",
+            )
+            return
+        if self._capture_time_input.text().strip() and capture_time is None:
+            QMessageBox.warning(
+                self,
+                "Invalid capture time",
+                "Use format YYYY-MM-DD HH:MM:SS or ISO datetime.",
+            )
             return
         existing = self._folder_tag_rules.get(folder, [])
         merged = existing + [t for t in tags if t not in existing]
-        self._folder_tag_rules[folder] = merged
-        self._rules_list.clear()
-        for key, value in self._folder_tag_rules.items():
-            self._rules_list.addItem(f"{key} -> {', '.join(value)}")
+        if merged:
+            self._folder_tag_rules[folder] = merged
+        elif folder in self._folder_tag_rules:
+            self._folder_tag_rules.pop(folder, None)
+
+        if capture_time:
+            self._folder_capture_time_rules[folder] = capture_time
+        elif not self._capture_time_input.text().strip():
+            self._folder_capture_time_rules.pop(folder, None)
+
+        self._refresh_rules_list()
         self._tags_input.clear()
+        self._capture_time_input.clear()
+
+    def _refresh_rules_list(self) -> None:
+        self._rules_list.clear()
+        keys = list(dict.fromkeys(list(self._folder_tag_rules.keys()) + list(self._folder_capture_time_rules.keys())))
+        for key in keys:
+            tags = self._folder_tag_rules.get(key, [])
+            capture_time = self._folder_capture_time_rules.get(key)
+            tags_text = ", ".join(tags) if tags else "-"
+            capture_text = capture_time if capture_time else "-"
+            item = QListWidgetItem(f"{key} -> tags: {tags_text} | fallback time: {capture_text}")
+            item.setData(Qt.ItemDataRole.UserRole, key)
+            self._rules_list.addItem(item)
 
     def _remove_selected_rule(self) -> None:
         item = self._rules_list.currentItem()
         if item is None:
             return
-        row = self._rules_list.row(item)
-        self._rules_list.takeItem(row)
-        keys = list(self._folder_tag_rules.keys())
-        if row < len(keys):
-            self._folder_tag_rules.pop(keys[row], None)
+        key = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(key, str):
+            self._folder_tag_rules.pop(key, None)
+            self._folder_capture_time_rules.pop(key, None)
+        self._refresh_rules_list()
 
     def _clear_rules(self) -> None:
         self._folder_tag_rules.clear()
-        self._rules_list.clear()
+        self._folder_capture_time_rules.clear()
+        self._refresh_rules_list()
 
-    def _collect_valid_folder_rules(self) -> dict[str, list[str]]:
-        valid: dict[str, list[str]] = {}
+    def _collect_valid_folder_rules(self) -> tuple[dict[str, list[str]], dict[str, str]]:
+        valid_tags: dict[str, list[str]] = {}
+        valid_capture_times: dict[str, str] = {}
         skipped: list[str] = []
-        for folder, tags in self._folder_tag_rules.items():
+        keys = set(self._folder_tag_rules.keys()) | set(self._folder_capture_time_rules.keys())
+        for folder in keys:
             folder_path = Path(folder)
             if not folder_path.exists() or not folder_path.is_dir():
                 skipped.append(folder)
                 continue
-            valid[str(folder_path.resolve(strict=False))] = tags
+            resolved = str(folder_path.resolve(strict=False))
+            tags = self._folder_tag_rules.get(folder, [])
+            capture_time = self._folder_capture_time_rules.get(folder)
+            if tags:
+                valid_tags[resolved] = tags
+            if capture_time:
+                valid_capture_times[resolved] = capture_time
         if skipped:
             QMessageBox.warning(
                 self,
                 "Skipped invalid rules",
                 "These folders are unavailable and were skipped:\n" + "\n".join(skipped),
             )
-        return valid
+        return valid_tags, valid_capture_times
 
     @staticmethod
     def _resolve_preview_path(result: FileImportResult, library_root: Path) -> Path | None:

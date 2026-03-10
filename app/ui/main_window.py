@@ -11,11 +11,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.db.repository import PhotoRepository
 from app.services.config_service import ConfigService
+from app.services.db_check_service import DbCheckService
 from app.services.file_service import FileService
 from app.services.metadata_service import MetadataService
 from app.services.photo_import_service import PhotoImportService
-from app.db.repository import PhotoRepository
+from app.services.vision_service import VisionService
 from app.ui.page_import import ImportPage
 from app.ui.page_placeholder import PlaceholderPage
 from app.ui.page_settings import SettingsPage
@@ -31,13 +33,20 @@ class MainWindow(QMainWindow):
         self._repository = PhotoRepository()
         self._metadata_service = MetadataService()
         self._file_service = FileService()
+        self._vision_service = VisionService()
         self._import_service = PhotoImportService(
+            repository=self._repository,
+            metadata_service=self._metadata_service,
+            file_service=self._file_service,
+            vision_service=self._vision_service,
+        )
+        self._db_check_service = DbCheckService(
             repository=self._repository,
             metadata_service=self._metadata_service,
             file_service=self._file_service,
         )
 
-        self._settings_page = SettingsPage(self._config_service)
+        self._settings_page = SettingsPage(self._config_service, self._db_check_service)
         self._import_page = ImportPage(self._config_service, self._import_service)
         self._settings_page.settings_saved.connect(self._import_page.refresh_enabled_state)  # type: ignore[arg-type]
 
