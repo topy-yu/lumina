@@ -48,3 +48,7 @@ class FileService:
         self.ensure_parent(target)
         shutil.move(str(source), str(target))
 
+    def copy_file(self, source: Path, target: Path) -> None:
+        self.ensure_parent(target)
+        shutil.copy2(str(source), str(target))
+

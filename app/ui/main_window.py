@@ -17,6 +17,7 @@ from app.services.db_check_service import DbCheckService
 from app.services.file_service import FileService
 from app.services.metadata_service import MetadataService
 from app.services.photo_import_service import PhotoImportService
+from app.services.preimport_service import PreImportService
 from app.services.vision_service import VisionService
 from app.ui.page_import import ImportPage
 from app.ui.page_placeholder import PlaceholderPage
@@ -41,6 +42,12 @@ class MainWindow(QMainWindow):
             file_service=self._file_service,
             vision_service=self._vision_service,
         )
+        self._preimport_service = PreImportService(
+            repository=self._repository,
+            metadata_service=self._metadata_service,
+            file_service=self._file_service,
+            vision_service=self._vision_service,
+        )
         self._db_check_service = DbCheckService(
             repository=self._repository,
             metadata_service=self._metadata_service,
@@ -48,7 +55,7 @@ class MainWindow(QMainWindow):
         )
 
         self._settings_page = SettingsPage(self._config_service, self._db_check_service)
-        self._import_page = ImportPage(self._config_service, self._import_service)
+        self._import_page = ImportPage(self._config_service, self._import_service, self._preimport_service)
         self._search_page = SearchPage(self._config_service, self._repository)
         self._settings_page.settings_saved.connect(self._import_page.refresh_enabled_state)  # type: ignore[arg-type]
 

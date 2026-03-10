@@ -22,12 +22,18 @@ _MAX_IMAGE_SIZE = 1024
 _TIMEOUT = 120
 
 
+class VisionServiceError(RuntimeError):
+    pass
+
+
 class VisionService:
     def generate_autotags(
         self,
         image_path: Path,
         api_url: str,
         model_name: str,
+        *,
+        strict: bool = False,
     ) -> list[str]:
         if not api_url or not model_name:
             return []
@@ -35,7 +41,9 @@ class VisionService:
             image_b64 = self._encode_image(image_path)
             raw_text = self._call_model(api_url, model_name, image_b64)
             return self._parse_tags(raw_text)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if strict:
+                raise VisionServiceError(str(exc)) from exc
             return []
 
     @staticmethod

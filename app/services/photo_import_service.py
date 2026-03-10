@@ -7,11 +7,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from app.services.ai_model_service import get_provider
 from app.db.repository import PhotoRepository
 from app.services.config_service import AppConfig, ConfigService
 from app.services.file_service import FileService
 from app.services.metadata_service import MetadataService
-from app.services.vision_service import VisionService
+from app.services.vision_service import VisionService, VisionServiceError
 
 
 @dataclass(slots=True)
@@ -31,6 +32,11 @@ class ImportSummary:
     duplicates: int = 0
     skipped_no_capture_time: int = 0
     errors: int = 0
+    model_checked: bool = False
+    model_ready: bool = False
+    model_message: str = ""
+    aborted: bool = False
+    abort_reason: str = ""
     results: list[FileImportResult] = field(default_factory=list)
 
 
@@ -61,6 +67,7 @@ class PhotoImportService:
         folder_tags_map: dict[str, list[str]] | None = None,
         folder_capture_time_map: dict[str, str] | None = None,
         progress: Callable[[str], None] | None = None,
+        require_model_ready: bool = True,
     ) -> ImportSummary:
         summary = ImportSummary(total=len(files))
         lib_root = Path(config.library_root)
@@ -68,10 +75,33 @@ class PhotoImportService:
         self._repository.initialize(db_path)
         folder_tag_rules = self._compile_folder_tag_rules(folder_tags_map or {})
         folder_capture_rules = self._compile_folder_capture_rules(folder_capture_time_map or {})
+        model_ready = False
 
         def report(msg: str) -> None:
             if progress:
                 progress(msg)
+
+        if self._vision_service and config.ai_api_url and config.ai_model_name:
+            summary.model_checked = True
+            try:
+                provider = get_provider(config.ai_provider)
+                model_status = provider.check_model(config.ai_api_url, config.ai_model_name)
+                summary.model_ready = model_status.connected and model_status.loaded
+                summary.model_message = model_status.message
+                model_ready = summary.model_ready
+                report(f"AI model check: {model_status.message}")
+            except Exception as exc:  # noqa: BLE001
+                summary.model_ready = False
+                summary.model_message = f"Model check failed: {exc}"
+                model_ready = False
+                report(summary.model_message)
+            if require_model_ready and not model_ready:
+                summary.aborted = True
+                summary.abort_reason = (
+                    "Import aborted: AI model is not running or not reachable."
+                )
+                report(summary.abort_reason)
+                return summary
 
         for idx, source in enumerate(files, 1):
             report(f"Processing {idx}/{len(files)}: {source.name}")
@@ -112,11 +142,34 @@ class PhotoImportService:
                 applied_tags = self._resolve_tags_for_source(source, folder_tag_rules)
 
                 autotags: list[str] = []
-                if self._vision_service and config.ai_api_url and config.ai_model_name:
+                if (
+                    self._vision_service
+                    and config.ai_api_url
+                    and config.ai_model_name
+                    and model_ready
+                ):
                     report(f"Auto-tagging {idx}/{len(files)}: {source.name}")
-                    autotags = self._vision_service.generate_autotags(
-                        target, config.ai_api_url, config.ai_model_name,
-                    )
+                    try:
+                        autotags = self._vision_service.generate_autotags(
+                            target, config.ai_api_url, config.ai_model_name, strict=True,
+                        )
+                    except VisionServiceError as exc:
+                        if require_model_ready:
+                            summary.errors += 1
+                            summary.aborted = True
+                            summary.abort_reason = f"Import aborted during model call: {exc}"
+                            summary.results.append(
+                                FileImportResult(
+                                    source=str(source),
+                                    status="error",
+                                    relative_path=stored_relative,
+                                    reason=summary.abort_reason,
+                                    applied_tags=applied_tags,
+                                )
+                            )
+                            report(summary.abort_reason)
+                            return summary
+                        report(f"Auto-tag skipped due to model error: {exc}")
 
                 self._repository.insert_photo(
                     db_path=db_path,
