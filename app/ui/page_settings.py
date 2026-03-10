@@ -357,16 +357,17 @@ class SettingsPage(QWidget):
         self._ai_model_list_worker = None
 
         current_model = self._model_combo.currentText()
-        self._model_combo.clear()
 
+        self._model_combo.blockSignals(True)
+        self._model_combo.clear()
         for model_info in result:
             self._model_combo.addItem(model_info.name)
-
         idx = self._model_combo.findText(current_model)
         if idx >= 0:
             self._model_combo.setCurrentIndex(idx)
         elif current_model:
             self._model_combo.setEditText(current_model)
+        self._model_combo.blockSignals(False)
 
         if self._model_combo.currentText():
             self._check_ai_model()

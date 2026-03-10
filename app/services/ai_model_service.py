@@ -121,12 +121,13 @@ class OllamaProvider(AIModelProvider):
             req = urllib.request.Request(f"{url}/api/ps", method="GET")
             with urllib.request.urlopen(req, timeout=self._TIMEOUT) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
+                models = data.get("models") or []
                 normalized = self._normalize_model_name(model_name)
-                for m in data.get("models", []):
+                for m in models:
                     running = self._normalize_model_name(m.get("name", ""))
                     if running == normalized:
                         return True
-        except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        except Exception:  # noqa: BLE001
             pass
         return False
 
