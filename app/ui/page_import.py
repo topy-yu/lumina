@@ -6,10 +6,10 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QUrl
 
 logger = logging.getLogger("lumina.ui.import")
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -673,8 +673,13 @@ class ImportPage(QWidget):
             preview_btn.clicked.connect(  # type: ignore[arg-type]
                 lambda _checked=False, s=item.source_path: self._preview_source(s)
             )
+            open_folder_btn = QPushButton("Open Dir")
+            open_folder_btn.clicked.connect(  # type: ignore[arg-type]
+                lambda _checked=False, s=item.source_path: self._open_source_folder(s)
+            )
 
             actions_layout.addWidget(preview_btn)
+            actions_layout.addWidget(open_folder_btn)
 
             if item.state == "failed":
                 retry_btn = QPushButton("Retry")
@@ -718,6 +723,13 @@ class ImportPage(QWidget):
             QMessageBox.information(self, "File missing", "Source file is no longer available.")
             return
         self._show_preview(source)
+
+    def _open_source_folder(self, source_path_str: str) -> None:
+        source = Path(source_path_str)
+        if not source.exists():
+            QMessageBox.information(self, "Path missing", "Source path is no longer available.")
+            return
+        self._open_folder(source if source.is_dir() else source.parent)
 
     def _retry_single_item(self, item_id: int) -> None:
         if self._retry_item_worker is not None or self._preimport_worker is not None:
@@ -870,6 +882,10 @@ class ImportPage(QWidget):
             preview_btn.clicked.connect(  # type: ignore[arg-type]
                 lambda _checked=False, di=data_index: self._preview_row(di)
             )
+            open_folder_btn = QPushButton("Open Dir")
+            open_folder_btn.clicked.connect(  # type: ignore[arg-type]
+                lambda _checked=False, di=data_index: self._open_result_folder(di)
+            )
             rename_btn = QPushButton("Rename")
             rename_btn.clicked.connect(  # type: ignore[arg-type]
                 lambda _checked=False, di=data_index: self._rename_row(di)
@@ -882,10 +898,12 @@ class ImportPage(QWidget):
             action_target = self._resolve_action_target(result, library_root)
             if action_target is None:
                 preview_btn.setEnabled(False)
+                open_folder_btn.setEnabled(False)
                 rename_btn.setEnabled(False)
                 delete_btn.setEnabled(False)
 
             actions_layout.addWidget(preview_btn)
+            actions_layout.addWidget(open_folder_btn)
             actions_layout.addWidget(rename_btn)
             actions_layout.addWidget(delete_btn)
             self._details_table.setCellWidget(row, 6, actions)
@@ -1073,6 +1091,17 @@ class ImportPage(QWidget):
             return
         self._show_preview(preview_path)
 
+    def _open_result_folder(self, row: int) -> None:
+        if self._latest_summary is None or self._latest_library_root is None:
+            return
+        result = self._latest_summary.results[row]
+        action_target = self._resolve_action_target(result, self._latest_library_root)
+        if action_target is None:
+            QMessageBox.information(self, "Path missing", "File is no longer available.")
+            return
+        file_path, _target_kind = action_target
+        self._open_folder(file_path.parent)
+
     def _rename_row(self, row: int) -> None:
         if self._latest_summary is None or self._latest_library_root is None:
             return
@@ -1225,6 +1254,14 @@ class ImportPage(QWidget):
         )
         layout.addWidget(image_label)
         dialog.exec()
+
+    def _open_folder(self, folder_path: Path) -> None:
+        if not folder_path.exists() or not folder_path.is_dir():
+            QMessageBox.information(self, "Folder missing", "Folder is no longer available.")
+            return
+        ok = QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder_path)))
+        if not ok:
+            QMessageBox.warning(self, "Open folder failed", f"Cannot open folder:\n{folder_path}")
 
     def _refresh_preimport_status(self) -> None:
         if self._active_preimport_job_id is None:

@@ -6,16 +6,16 @@ from datetime import datetime
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
-from PIL.ExifTags import TAGS
+from PIL.ExifTags import IFD, TAGS
 
 logger = logging.getLogger("lumina.metadata")
 
 
 class MetadataService:
     _filename_patterns = [
-        re.compile(r"(?P<ts>\d{14})"),
-        re.compile(r"(?P<d>\d{8})[_-]?(?P<t>\d{6})"),
         re.compile(r"IMG[_-]?(?P<d>\d{8})[_-]?(?P<t>\d{4,6})", flags=re.IGNORECASE),
+        re.compile(r"(?<!\d)(?P<ts>\d{14})(?!\d)"),
+        re.compile(r"(?<!\d)(?P<d>\d{8})[_-]?(?P<t>\d{6})(?!\d)"),
     ]
 
     def resolve_capture_time(self, path: Path) -> datetime | None:
@@ -34,18 +34,17 @@ class MetadataService:
         try:
             with Image.open(path) as img:
                 exif = img.getexif()
-                if not exif:
-                    return None
         except (UnidentifiedImageError, OSError):
             return None
 
-        exif_lookup = {TAGS.get(k, k): v for k, v in exif.items()}
-        for key in ("DateTimeOriginal", "DateTimeDigitized", "DateTime"):
-            raw = exif_lookup.get(key)
-            parsed = self._parse_exif_datetime(raw)
+        exif_ifd = exif.get_ifd(IFD.Exif)
+        for tag_id in (0x9003, 0x9004):
+            parsed = self._parse_exif_datetime(exif_ifd.get(tag_id))
             if parsed is not None:
                 return parsed
-        return None
+
+        main_lookup = {TAGS.get(k, k): v for k, v in exif.items()}
+        return self._parse_exif_datetime(main_lookup.get("DateTime"))
 
     def guess_capture_time_from_filename(self, filename: str) -> datetime | None:
         stem = Path(filename).stem

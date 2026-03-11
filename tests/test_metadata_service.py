@@ -20,3 +20,17 @@ def test_guess_capture_time_from_split_date_time_pattern() -> None:
 def test_guess_capture_time_returns_none_for_unmatched_name() -> None:
     service = MetadataService()
     assert service.guess_capture_time_from_filename("photo_without_timestamp.png") is None
+
+
+def test_reimported_filename_not_mismatched() -> None:
+    """A file previously imported as IMG{YYYYMMDDHHMM}_{random} must not
+    have its timestamp parsed from the wrong digit position."""
+    service = MetadataService()
+    parsed = service.guess_capture_time_from_filename("IMG202412150930_12010456.JPG")
+    assert parsed == datetime(2024, 12, 15, 9, 30, 0)
+
+
+def test_img_prefix_with_4_digit_time() -> None:
+    service = MetadataService()
+    parsed = service.guess_capture_time_from_filename("IMG_20000601_1150.jpg")
+    assert parsed == datetime(2000, 6, 1, 11, 50, 0)

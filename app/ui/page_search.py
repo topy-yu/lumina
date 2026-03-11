@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PIL import Image
 from PySide6.QtCore import QMimeData, QUrl, Qt
-from PySide6.QtGui import QBrush, QColor, QGuiApplication, QPixmap, QTransform
+from PySide6.QtGui import QBrush, QColor, QDesktopServices, QGuiApplication, QPixmap, QTransform
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -352,7 +352,12 @@ class SearchPage(QWidget):
             preview_btn.clicked.connect(  # type: ignore[arg-type]
                 lambda _checked=False, di=data_index: self._preview_row(di)
             )
+            open_folder_btn = QPushButton("Open Dir")
+            open_folder_btn.clicked.connect(  # type: ignore[arg-type]
+                lambda _checked=False, di=data_index: self._open_row_folder(di)
+            )
             actions_layout.addWidget(preview_btn)
+            actions_layout.addWidget(open_folder_btn)
             self._results_table.setCellWidget(row, 5, actions)
         self._results_table.blockSignals(False)
         self._update_results_page_label()
@@ -390,6 +395,17 @@ class SearchPage(QWidget):
             self._zoom_factor = 1.0
             self._display_current()
             self._update_nav_state()
+
+    def _open_row_folder(self, row: int) -> None:
+        if self._library_root is None:
+            return
+        if row < 0 or row >= len(self._results):
+            return
+        image_path = self._library_root / self._results[row].relative_path
+        if not image_path.exists():
+            QMessageBox.information(self, "File missing", "File is no longer available.")
+            return
+        self._open_folder(image_path.parent)
 
     def _highlight_result_row(self, data_index: int) -> None:
         """Highlight the result row that matches the currently displayed photo."""
@@ -627,6 +643,14 @@ class SearchPage(QWidget):
                     break
                 digest.update(chunk)
         return digest.hexdigest()
+
+    def _open_folder(self, folder_path: Path) -> None:
+        if not folder_path.exists() or not folder_path.is_dir():
+            QMessageBox.information(self, "Folder missing", "Folder is no longer available.")
+            return
+        ok = QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder_path)))
+        if not ok:
+            QMessageBox.warning(self, "Open folder failed", f"Cannot open folder:\n{folder_path}")
 
     # ── Copy / Delete ──────────────────────────────────────────
 

@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal, QUrl
 
 logger = logging.getLogger("lumina.ui.settings")
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -592,11 +592,17 @@ class SettingsPage(QWidget):
             preview_btn.clicked.connect(  # type: ignore[arg-type]
                 lambda _checked=False, r=row: self._preview_row(r)
             )
+            open_folder_btn = QPushButton("Open Dir")
+            open_folder_btn.clicked.connect(  # type: ignore[arg-type]
+                lambda _checked=False, r=row: self._open_row_folder(r)
+            )
 
             if not self._can_preview(result):
                 preview_btn.setEnabled(False)
+                open_folder_btn.setEnabled(False)
 
             actions_layout.addWidget(preview_btn)
+            actions_layout.addWidget(open_folder_btn)
             self._details_table.setCellWidget(row, 4, actions)
 
     def _can_preview(self, result: CheckFileResult) -> bool:
@@ -616,6 +622,16 @@ class SettingsPage(QWidget):
             QMessageBox.information(self, "File missing", "File is no longer available.")
             return
         self._show_preview(file_path)
+
+    def _open_row_folder(self, row: int) -> None:
+        if self._latest_summary is None or self._latest_library_root is None:
+            return
+        result = self._latest_summary.results[row]
+        file_path = self._latest_library_root / result.relative_path
+        if not file_path.exists() or not file_path.is_file():
+            QMessageBox.information(self, "File missing", "File is no longer available.")
+            return
+        self._open_folder(file_path.parent)
 
     def _show_preview(self, image_path: Path) -> None:
         pixmap = QPixmap(str(image_path))
@@ -644,3 +660,11 @@ class SettingsPage(QWidget):
         )
         layout.addWidget(image_label)
         dialog.exec()
+
+    def _open_folder(self, folder_path: Path) -> None:
+        if not folder_path.exists() or not folder_path.is_dir():
+            QMessageBox.information(self, "Folder missing", "Folder is no longer available.")
+            return
+        ok = QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder_path)))
+        if not ok:
+            QMessageBox.warning(self, "Open folder failed", f"Cannot open folder:\n{folder_path}")
