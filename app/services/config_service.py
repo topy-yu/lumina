@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+logger = logging.getLogger("lumina.config")
 
 
 @dataclass(slots=True)
@@ -26,6 +29,7 @@ class ConfigService:
 
     def load(self) -> AppConfig:
         if not self._config_file.exists():
+            logger.debug("Config file not found, using defaults")
             return AppConfig()
         data = json.loads(self._config_file.read_text(encoding="utf-8"))
         config = AppConfig(
@@ -35,12 +39,14 @@ class ConfigService:
             ai_api_url=data.get("ai_api_url", "http://127.0.0.1:11434"),
             ai_model_name=data.get("ai_model_name", ""),
         )
+        logger.debug("Config loaded: library_root=%s", config.library_root)
         return self.normalize(config)
 
     def save(self, config: AppConfig) -> None:
         config = self.normalize(config)
         self._config_file.parent.mkdir(parents=True, exist_ok=True)
         self._config_file.write_text(json.dumps(asdict(config), indent=2), encoding="utf-8")
+        logger.info("Config saved: library_root=%s", config.library_root)
 
     def validate(self, config: AppConfig) -> list[str]:
         config = self.normalize(config)

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
+
+logger = logging.getLogger("lumina.ui.settings")
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -43,7 +46,9 @@ class _DbCheckWorker(QThread):
         self._config = config
 
     def run(self) -> None:
+        logger.info("DB check worker started")
         result = self._service.check(self._config, progress=self.progress.emit)
+        logger.info("DB check worker finished")
         self.check_done.emit(result)
 
 
@@ -56,7 +61,9 @@ class _AICheckWorker(QThread):
         self._api_url = api_url
 
     def run(self) -> None:
+        logger.info("AI connection check started: %s", self._api_url)
         status = self._provider.check_connection(self._api_url)
+        logger.info("AI connection check result: connected=%s", status.connected)
         self.check_done.emit(status)
 
 
@@ -86,7 +93,9 @@ class _AIModelCheckWorker(QThread):
         self._model_name = model_name
 
     def run(self) -> None:
+        logger.info("Checking model status: %s", self._model_name)
         status = self._provider.check_model(self._api_url, self._model_name)
+        logger.info("Model check result: %s (loaded=%s)", self._model_name, status.loaded)
         self.check_done.emit(status)
 
 
@@ -104,10 +113,13 @@ class _AIModelLoadWorker(QThread):
         self._load = load
 
     def run(self) -> None:
+        action = "load" if self._load else "unload"
+        logger.info("Model %s worker started: %s", action, self._model_name)
         if self._load:
             ok, msg = self._provider.load_model(self._api_url, self._model_name)
         else:
             ok, msg = self._provider.unload_model(self._api_url, self._model_name)
+        logger.info("Model %s worker finished: ok=%s, msg=%s", action, ok, msg)
         self.load_done.emit(ok, msg)
 
 

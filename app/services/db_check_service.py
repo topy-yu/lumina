@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +10,8 @@ from app.db.repository import PhotoRecord, PhotoRepository
 from app.services.config_service import AppConfig
 from app.services.file_service import FileService
 from app.services.metadata_service import MetadataService
+
+logger = logging.getLogger("lumina.dbcheck")
 
 
 @dataclass(slots=True)
@@ -47,6 +50,7 @@ class DbCheckService:
         config: AppConfig,
         progress: Callable[[str], None] | None = None,
     ) -> DbCheckSummary:
+        logger.info("Starting database check: library=%s", config.library_root)
         summary = DbCheckSummary()
         lib_root = Path(config.library_root)
         db_path = Path(config.db_path)
@@ -141,6 +145,11 @@ class DbCheckService:
                 )
 
         report("Database check complete.")
+        logger.info(
+            "DB check done: disk=%d db=%d added=%d moved=%d deleted=%d errors=%d",
+            summary.total_on_disk, summary.total_in_db,
+            summary.added, summary.moved, summary.deleted, summary.errors,
+        )
         return summary
 
     def _handle_new_file(

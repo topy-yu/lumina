@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import uuid
@@ -16,6 +17,8 @@ from app.services.file_service import FileService
 from app.services.metadata_service import MetadataService
 from app.services.photo_import_service import FileImportResult, ImportSummary
 from app.services.vision_service import VisionService, VisionServiceError
+
+logger = logging.getLogger("lumina.preimport")
 
 
 @dataclass(slots=True)
@@ -194,6 +197,8 @@ class PreImportService:
         job_id: str,
         item_id: int,
         config: AppConfig,
+        *,
+        skip_autotag: bool = False,
     ) -> PreImportItemReport:
         """Process a single item directly to 'prepared' (or 'failed')."""
         self.initialize()
@@ -230,7 +235,7 @@ class PreImportService:
                 raise RuntimeError("capture time unavailable")
             rel = self._file_service.build_target_relative_path(capture_time, source.suffix)
             autotags: list[str] = []
-            if self._vision_service and config.ai_api_url and config.ai_model_name:
+            if not skip_autotag and self._vision_service and config.ai_api_url and config.ai_model_name:
                 autotags = self._vision_service.generate_autotags(
                     source, config.ai_api_url, config.ai_model_name, strict=True,
                 )
@@ -260,6 +265,7 @@ class PreImportService:
         folder_tags_map: dict[str, list[str]],
         folder_capture_time_map: dict[str, str],
     ) -> str:
+        logger.info("Creating pre-import job for %d file(s)", len(files))
         self.initialize()
         job_id = uuid.uuid4().hex
         rules = self._compile_rules(folder_tags_map, folder_capture_time_map)
@@ -300,6 +306,7 @@ class PreImportService:
                     (job_id, str(source), json.dumps(tags, ensure_ascii=False), now),
                 )
             conn.commit()
+        logger.info("Pre-import job created: %s (%d items)", job_id[:8], len(unique_sources))
         return job_id
 
     def run_preimport(
@@ -307,14 +314,16 @@ class PreImportService:
         job_id: str,
         config: AppConfig,
         *,
+        skip_autotag: bool = False,
         progress: Callable[[str], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
     ) -> PreImportJobState:
+        logger.info("Running pre-import for job %s", job_id[:8])
         self.initialize()
         self._set_job_status(job_id, "running")
         rules = self._load_rules_for_job(job_id)
 
-        if self._vision_service and config.ai_api_url and config.ai_model_name:
+        if not skip_autotag and self._vision_service and config.ai_api_url and config.ai_model_name:
             provider = get_provider(config.ai_provider)
             model_status = provider.check_model(config.ai_api_url, config.ai_model_name)
             if not (model_status.connected and model_status.loaded):
@@ -365,7 +374,7 @@ class PreImportService:
                     raise RuntimeError("capture time unavailable")
                 rel = self._file_service.build_target_relative_path(capture_time, source.suffix)
                 autotags: list[str] = []
-                if self._vision_service and config.ai_api_url and config.ai_model_name:
+                if not skip_autotag and self._vision_service and config.ai_api_url and config.ai_model_name:
                     autotags = self._vision_service.generate_autotags(
                         source,
                         config.ai_api_url,
@@ -383,10 +392,15 @@ class PreImportService:
                     planned_relative_path=str(rel),
                 )
             except Exception as exc:  # noqa: BLE001
+                logger.error("Pre-import item failed: %s - %s", source.name, exc)
                 self._update_item_failed(item_id, str(exc))
 
         state = self.get_job_state(job_id)
         self._set_job_status(job_id, "ready" if state.planned == 0 else "failed")
+        logger.info(
+            "Pre-import finished: job=%s prepared=%d failed=%d",
+            job_id[:8], state.prepared, state.failed,
+        )
         return self.get_job_state(job_id)
 
     def import_prepared(
@@ -396,6 +410,7 @@ class PreImportService:
         *,
         progress: Callable[[str], None] | None = None,
     ) -> ImportSummary:
+        logger.info("Importing prepared items for job %s", job_id[:8])
         self.initialize()
         summary = ImportSummary()
         lib_root = Path(config.library_root)
@@ -465,6 +480,10 @@ class PreImportService:
 
         state = self.get_job_state(job_id)
         self._set_job_status(job_id, "done" if state.planned == 0 and state.prepared == 0 else "ready")
+        logger.info(
+            "Import prepared finished: job=%s imported=%d duplicates=%d",
+            job_id[:8], summary.imported, summary.duplicates,
+        )
         return summary
 
     def _validate_prepared_rows(self, rows: list[tuple]) -> str | None:

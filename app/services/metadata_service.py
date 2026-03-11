@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
 from PIL.ExifTags import TAGS
+
+logger = logging.getLogger("lumina.metadata")
 
 
 class MetadataService:
@@ -18,8 +21,14 @@ class MetadataService:
     def resolve_capture_time(self, path: Path) -> datetime | None:
         from_exif = self.extract_capture_time_from_exif(path)
         if from_exif is not None:
+            logger.debug("Capture time from EXIF: %s -> %s", path.name, from_exif)
             return from_exif
-        return self.guess_capture_time_from_filename(path.name)
+        from_filename = self.guess_capture_time_from_filename(path.name)
+        if from_filename is not None:
+            logger.debug("Capture time from filename: %s -> %s", path.name, from_filename)
+        else:
+            logger.debug("No capture time found for: %s", path.name)
+        return from_filename
 
     def extract_capture_time_from_exif(self, path: Path) -> datetime | None:
         try:

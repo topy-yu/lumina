@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import sys
 import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+
+logger = logging.getLogger("lumina.ai_model")
 
 
 @dataclass(slots=True)
@@ -62,6 +65,7 @@ class OllamaProvider(AIModelProvider):
         return True
 
     def check_connection(self, api_url: str) -> ConnectionStatus:
+        logger.debug("Checking Ollama connection: %s", api_url)
         try:
             url = api_url.rstrip("/")
             req = urllib.request.Request(f"{url}/", method="GET")
@@ -69,12 +73,14 @@ class OllamaProvider(AIModelProvider):
                 if resp.status == 200:
                     body = resp.read().decode("utf-8", errors="replace").strip()
                     if "Ollama" in body:
+                        logger.info("Ollama connected: %s", api_url)
                         return ConnectionStatus(connected=True, message="Ollama is running")
                     return ConnectionStatus(
                         connected=False,
                         message=f"Port is open but response is not Ollama: {body[:80]}",
                     )
         except (urllib.error.URLError, OSError) as exc:
+            logger.debug("Ollama connection failed: %s", exc)
             return ConnectionStatus(connected=False, message=f"Connection failed: {exc}")
         return ConnectionStatus(connected=False, message="Unexpected response")
 
@@ -136,6 +142,7 @@ class OllamaProvider(AIModelProvider):
         return name if ":" in name else f"{name}:latest"
 
     def load_model(self, api_url: str, model_name: str) -> tuple[bool, str]:
+        logger.info("Loading model: %s", model_name)
         try:
             url = api_url.rstrip("/")
             payload = json.dumps({
@@ -193,6 +200,7 @@ class OllamaProvider(AIModelProvider):
             return []
 
     def start_server(self) -> tuple[bool, str]:
+        logger.info("Starting Ollama server")
         try:
             if sys.platform == "win32":
                 subprocess.Popen(
@@ -215,6 +223,7 @@ class OllamaProvider(AIModelProvider):
             return False, f"Failed to start Ollama: {exc}"
 
     def stop_server(self) -> tuple[bool, str]:
+        logger.info("Stopping Ollama server")
         try:
             if sys.platform == "win32":
                 subprocess.run(

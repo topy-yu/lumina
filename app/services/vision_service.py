@@ -3,11 +3,15 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 from PIL import Image
+
+logger = logging.getLogger("lumina.vision")
 
 _TAG_PROMPT = (
     "Analyze this photo and provide relevant tags for organizing a photo library. "
@@ -54,10 +58,16 @@ class VisionService:
         if not api_url or not model_name:
             return []
         try:
+            logger.info("Generating autotags: %s", image_path.name)
+            t0 = time.monotonic()
             image_b64 = self._encode_image(image_path)
             raw_text = self._call_model(api_url, model_name, _TAG_PROMPT, [image_b64])
-            return self._parse_tags(raw_text)
+            tags = self._parse_tags(raw_text)
+            elapsed = time.monotonic() - t0
+            logger.info("Autotags done (%.1fs): %s -> %d tags", elapsed, image_path.name, len(tags))
+            return tags
         except Exception as exc:  # noqa: BLE001
+            logger.error("Autotag failed: %s - %s", image_path.name, exc)
             if strict:
                 raise VisionServiceError(str(exc)) from exc
             return []
@@ -75,11 +85,17 @@ class VisionService:
         if not api_url or not model_name or not candidate_tags:
             return []
         try:
+            logger.info("Matching tags for: %s (candidates: %d)", image_path.name, len(candidate_tags))
+            t0 = time.monotonic()
             image_b64 = self._encode_image(image_path)
             prompt = _MATCH_TAGS_PROMPT.format(candidates=", ".join(candidate_tags))
             raw_text = self._call_model(api_url, model_name, prompt, [image_b64])
-            return self._filter_candidates(raw_text, candidate_tags)
+            matched = self._filter_candidates(raw_text, candidate_tags)
+            elapsed = time.monotonic() - t0
+            logger.info("Match tags done (%.1fs): %s -> %d matched", elapsed, image_path.name, len(matched))
+            return matched
         except Exception as exc:  # noqa: BLE001
+            logger.error("Match tags failed: %s - %s", image_path.name, exc)
             if strict:
                 raise VisionServiceError(str(exc)) from exc
             return []
@@ -97,13 +113,19 @@ class VisionService:
         if not api_url or not model_name:
             return False
         try:
+            logger.info("Person match: ref=%s target=%s", reference_path.name, target_path.name)
+            t0 = time.monotonic()
             ref_b64 = self._encode_image(reference_path)
             tgt_b64 = self._encode_image(target_path)
             raw_text = self._call_model(
                 api_url, model_name, _MATCH_PERSON_PROMPT, [ref_b64, tgt_b64],
             )
-            return raw_text.strip().upper().startswith("YES")
+            result = raw_text.strip().upper().startswith("YES")
+            elapsed = time.monotonic() - t0
+            logger.info("Person match done (%.1fs): %s -> %s", elapsed, target_path.name, result)
+            return result
         except Exception as exc:  # noqa: BLE001
+            logger.error("Person match failed: %s - %s", target_path.name, exc)
             if strict:
                 raise VisionServiceError(str(exc)) from exc
             return False

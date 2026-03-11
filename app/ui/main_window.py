@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.db.repository import PhotoRepository
+from app.logging_config import LogSignalEmitter
 from app.services.config_service import ConfigService
 from app.services.db_check_service import DbCheckService
 from app.services.file_service import FileService
@@ -20,14 +21,16 @@ from app.services.photo_import_service import PhotoImportService
 from app.services.preimport_service import PreImportService
 from app.services.vision_service import VisionService
 from app.ui.page_import import ImportPage
+from app.ui.page_log import LogPage
 from app.ui.page_search import SearchPage
 from app.ui.page_settings import SettingsPage
 from app.ui.page_tagging import TaggingPage
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, log_emitter: LogSignalEmitter | None = None) -> None:
         super().__init__()
+        self._log_emitter = log_emitter
         self.setWindowTitle("Lumina")
         self.resize(1000, 700)
 
@@ -58,6 +61,7 @@ class MainWindow(QMainWindow):
         self._import_page = ImportPage(self._config_service, self._import_service, self._preimport_service)
         self._search_page = SearchPage(self._config_service, self._repository)
         self._tagging_page = TaggingPage(self._config_service, self._repository, self._vision_service)
+        self._log_page = LogPage(self._log_emitter) if self._log_emitter else LogPage(LogSignalEmitter())
         self._settings_page.settings_saved.connect(self._import_page.refresh_enabled_state)  # type: ignore[arg-type]
 
         self._build_ui()
@@ -69,7 +73,7 @@ class MainWindow(QMainWindow):
 
         nav = QListWidget()
         nav.setMaximumWidth(220)
-        nav_items = ["1. Settings", "2. Import", "3. Tagging", "4. Search"]
+        nav_items = ["1. Settings", "2. Import", "3. Tagging", "4. Search", "5. Log"]
         for item in nav_items:
             nav.addItem(QListWidgetItem(item))
 
@@ -78,6 +82,7 @@ class MainWindow(QMainWindow):
         stack.addWidget(self._import_page)
         stack.addWidget(self._tagging_page)
         stack.addWidget(self._search_page)
+        stack.addWidget(self._log_page)
 
         nav.currentRowChanged.connect(stack.setCurrentIndex)  # type: ignore[arg-type]
         nav.currentRowChanged.connect(self._on_nav_change)  # type: ignore[arg-type]

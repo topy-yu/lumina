@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import random
 import shutil
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger("lumina.file")
 
 
 class FileService:
@@ -23,6 +26,7 @@ class FileService:
         return path.is_file() and path.suffix.lower() in self._supported_extensions
 
     def compute_md5(self, path: Path) -> str:
+        logger.debug("Computing MD5: %s", path.name)
         digest = hashlib.md5()
         with path.open("rb") as file_handle:
             while True:
@@ -30,7 +34,9 @@ class FileService:
                 if not chunk:
                     break
                 digest.update(chunk)
-        return digest.hexdigest()
+        result = digest.hexdigest()
+        logger.debug("MD5 result: %s -> %s", path.name, result)
+        return result
 
     def build_target_relative_path(self, capture_time: datetime, source_suffix: str) -> Path:
         year = capture_time.strftime("%Y")
@@ -45,6 +51,7 @@ class FileService:
         path.parent.mkdir(parents=True, exist_ok=True)
 
     def move_file(self, source: Path, target: Path) -> None:
+        logger.debug("Moving file: %s -> %s", source, target)
         self.ensure_parent(target)
         shutil.move(str(source), str(target))
 

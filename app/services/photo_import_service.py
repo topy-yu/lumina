@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -13,6 +14,8 @@ from app.services.config_service import AppConfig, ConfigService
 from app.services.file_service import FileService
 from app.services.metadata_service import MetadataService
 from app.services.vision_service import VisionService, VisionServiceError
+
+logger = logging.getLogger("lumina.import")
 
 
 @dataclass(slots=True)
@@ -67,8 +70,9 @@ class PhotoImportService:
         folder_tags_map: dict[str, list[str]] | None = None,
         folder_capture_time_map: dict[str, str] | None = None,
         progress: Callable[[str], None] | None = None,
-        require_model_ready: bool = True,
+        skip_autotag: bool = False,
     ) -> ImportSummary:
+        logger.info("Starting direct import: %d file(s)", len(files))
         summary = ImportSummary(total=len(files))
         lib_root = Path(config.library_root)
         db_path = lib_root / ConfigService.DB_FILENAME
@@ -81,7 +85,7 @@ class PhotoImportService:
             if progress:
                 progress(msg)
 
-        if self._vision_service and config.ai_api_url and config.ai_model_name:
+        if not skip_autotag and self._vision_service and config.ai_api_url and config.ai_model_name:
             summary.model_checked = True
             try:
                 provider = get_provider(config.ai_provider)
@@ -95,7 +99,7 @@ class PhotoImportService:
                 summary.model_message = f"Model check failed: {exc}"
                 model_ready = False
                 report(summary.model_message)
-            if require_model_ready and not model_ready:
+            if not model_ready:
                 summary.aborted = True
                 summary.abort_reason = (
                     "Import aborted: AI model is not running or not reachable."
@@ -143,7 +147,8 @@ class PhotoImportService:
 
                 autotags: list[str] = []
                 if (
-                    self._vision_service
+                    not skip_autotag
+                    and self._vision_service
                     and config.ai_api_url
                     and config.ai_model_name
                     and model_ready
@@ -154,22 +159,20 @@ class PhotoImportService:
                             target, config.ai_api_url, config.ai_model_name, strict=True,
                         )
                     except VisionServiceError as exc:
-                        if require_model_ready:
-                            summary.errors += 1
-                            summary.aborted = True
-                            summary.abort_reason = f"Import aborted during model call: {exc}"
-                            summary.results.append(
-                                FileImportResult(
-                                    source=str(source),
-                                    status="error",
-                                    relative_path=stored_relative,
-                                    reason=summary.abort_reason,
-                                    applied_tags=applied_tags,
-                                )
+                        summary.errors += 1
+                        summary.aborted = True
+                        summary.abort_reason = f"Import aborted during model call: {exc}"
+                        summary.results.append(
+                            FileImportResult(
+                                source=str(source),
+                                status="error",
+                                relative_path=stored_relative,
+                                reason=summary.abort_reason,
+                                applied_tags=applied_tags,
                             )
-                            report(summary.abort_reason)
-                            return summary
-                        report(f"Auto-tag skipped due to model error: {exc}")
+                        )
+                        report(summary.abort_reason)
+                        return summary
 
                 self._repository.insert_photo(
                     db_path=db_path,
@@ -191,10 +194,15 @@ class PhotoImportService:
                     )
                 )
             except Exception as exc:  # noqa: BLE001
+                logger.error("Import error for %s: %s", source.name, exc)
                 summary.errors += 1
                 summary.results.append(
                     FileImportResult(source=str(source), status="error", reason=str(exc))
                 )
+        logger.info(
+            "Direct import finished: %d imported, %d duplicates, %d skipped, %d errors",
+            summary.imported, summary.duplicates, summary.skipped_no_capture_time, summary.errors,
+        )
         return summary
 
     def _reserve_unique_target(self, target: Path) -> Path:

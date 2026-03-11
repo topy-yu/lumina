@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Signal
+
+logger = logging.getLogger("lumina.ui.tagging")
 from PySide6.QtWidgets import (
     QFileDialog,
     QGroupBox,
@@ -70,6 +73,7 @@ class _MatchTagsWorker(QThread):
 
     def run(self) -> None:
         total = len(self._photos)
+        logger.info("Match tags worker started: %d photos, %d candidates", total, len(self._candidate_tags))
         tagged_count = 0
         skipped_count = 0
         candidate_lower = {t.lower() for t in self._candidate_tags}
@@ -77,6 +81,7 @@ class _MatchTagsWorker(QThread):
             for i, photo in enumerate(self._photos):
                 if self._abort:
                     self.sig.log.emit("Aborted.")
+                    logger.info("Match tags worker aborted")
                     break
                 image_path = self._library_root / photo.relative_path
                 if not image_path.exists():
@@ -108,8 +113,10 @@ class _MatchTagsWorker(QThread):
                     self.sig.log.emit(f"[{i+1}/{total}] no match: {photo.relative_path}")
                 self.sig.progress.emit(i + 1, total)
         except Exception as exc:  # noqa: BLE001
+            logger.error("Match tags worker error: %s", exc)
             self.sig.error.emit(str(exc))
             return
+        logger.info("Match tags worker finished: %d/%d tagged, %d skipped", tagged_count, total, skipped_count)
         self.sig.log.emit(f"Done. {tagged_count}/{total} photos tagged, {skipped_count} skipped.")
         self.sig.finished.emit()
 
@@ -152,11 +159,13 @@ class _AutotagsWorker(QThread):
 
     def run(self) -> None:
         total = len(self._photos)
+        logger.info("Autotags worker started: %d photos", total)
         updated_count = 0
         try:
             for i, photo in enumerate(self._photos):
                 if self._abort:
                     self.sig.log.emit("Aborted.")
+                    logger.info("Autotags worker aborted")
                     break
                 image_path = self._library_root / photo.relative_path
                 if not image_path.exists():
@@ -176,8 +185,10 @@ class _AutotagsWorker(QThread):
                 self.sig.log.emit(f"[{i+1}/{total}] {photo.relative_path}  [{tag_preview}]")
                 self.sig.progress.emit(i + 1, total)
         except Exception as exc:  # noqa: BLE001
+            logger.error("Autotags worker error: %s", exc)
             self.sig.error.emit(str(exc))
             return
+        logger.info("Autotags worker finished: %d/%d updated", updated_count, total)
         self.sig.log.emit(f"Done. {updated_count}/{total} photos updated.")
         self.sig.finished.emit()
 
@@ -244,8 +255,10 @@ class _PersonTagWorker(QThread):
                     self.sig.log.emit(f"[{i+1}/{total}] no match: {photo.relative_path}")
                 self.sig.progress.emit(i + 1, total)
         except Exception as exc:  # noqa: BLE001
+            logger.error("Person tag worker error: %s", exc)
             self.sig.error.emit(str(exc))
             return
+        logger.info("Person tag worker finished: %d/%d matched '%s'", matched_count, total, self._person_tag)
         self.sig.log.emit(f"Done. {matched_count}/{total} photos matched '{self._person_tag}'.")
         self.sig.finished.emit()
 

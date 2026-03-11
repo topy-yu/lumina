@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal
+
+logger = logging.getLogger("lumina.ui.import")
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -47,7 +50,7 @@ class _ImportWorker(QThread):
         config: AppConfig,
         folder_tags_map: dict[str, list[str]],
         folder_capture_time_map: dict[str, str],
-        require_model_ready: bool,
+        skip_autotag: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -56,17 +59,19 @@ class _ImportWorker(QThread):
         self._config = config
         self._folder_tags_map = folder_tags_map
         self._folder_capture_time_map = folder_capture_time_map
-        self._require_model_ready = require_model_ready
+        self._skip_autotag = skip_autotag
 
     def run(self) -> None:
+        logger.info("Import worker started: %d files", len(self._files))
         summary = self._import_service.import_files(
             self._files,
             self._config,
             folder_tags_map=self._folder_tags_map,
             folder_capture_time_map=self._folder_capture_time_map,
             progress=self.progress.emit,
-            require_model_ready=self._require_model_ready,
+            skip_autotag=self._skip_autotag,
         )
+        logger.info("Import worker finished: %d imported", summary.imported)
         self.import_done.emit(summary)
 
 
@@ -84,6 +89,7 @@ class _PreImportWorker(QThread):
         folder_tags_map: dict[str, list[str]] | None = None,
         folder_capture_time_map: dict[str, str] | None = None,
         job_id: str | None = None,
+        skip_autotag: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -94,12 +100,14 @@ class _PreImportWorker(QThread):
         self._folder_tags_map = folder_tags_map or {}
         self._folder_capture_time_map = folder_capture_time_map or {}
         self._job_id = job_id
+        self._skip_autotag = skip_autotag
         self._stop_requested = False
 
     def request_stop(self) -> None:
         self._stop_requested = True
 
     def run(self) -> None:
+        logger.info("PreImport worker started: mode=%s", self._mode)
         if self._mode == "prepare":
             job_id = self._service.create_job(
                 self._files,
@@ -110,9 +118,11 @@ class _PreImportWorker(QThread):
             state = self._service.run_preimport(
                 job_id,
                 self._config,
+                skip_autotag=self._skip_autotag,
                 progress=self.progress.emit,
                 should_stop=lambda: self._stop_requested,
             )
+            logger.info("PreImport worker finished: mode=prepare, job=%s", job_id[:8])
             self.preimport_done.emit(("prepare", state))
             return
 
@@ -123,9 +133,11 @@ class _PreImportWorker(QThread):
             state = self._service.run_preimport(
                 self._job_id,
                 self._config,
+                skip_autotag=self._skip_autotag,
                 progress=self.progress.emit,
                 should_stop=lambda: self._stop_requested,
             )
+            logger.info("PreImport worker finished: mode=resume")
             self.preimport_done.emit(("resume", state))
             return
 
@@ -135,6 +147,7 @@ class _PreImportWorker(QThread):
                 self._config,
                 progress=self.progress.emit,
             )
+            logger.info("PreImport worker finished: mode=import, imported=%d", summary.imported)
             self.preimport_done.emit(("import", summary))
 
 
@@ -147,6 +160,7 @@ class _RetryItemWorker(QThread):
         job_id: str,
         item_id: int,
         config: AppConfig,
+        skip_autotag: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -154,10 +168,15 @@ class _RetryItemWorker(QThread):
         self._job_id = job_id
         self._item_id = item_id
         self._config = config
+        self._skip_autotag = skip_autotag
 
     def run(self) -> None:
-        self._service.prepare_single_item(self._job_id, self._item_id, self._config)
+        logger.info("Retry item worker started: item_id=%d", self._item_id)
+        self._service.prepare_single_item(
+            self._job_id, self._item_id, self._config, skip_autotag=self._skip_autotag,
+        )
         state = self._service.get_job_state(self._job_id)
+        logger.info("Retry item worker finished")
         self.retry_done.emit(state)
 
 
@@ -225,9 +244,9 @@ class ImportPage(QWidget):
         self._stop_preimport_button.clicked.connect(self._stop_preimport)  # type: ignore[arg-type]
         self._import_prepared_button = QPushButton("Import Prepared")
         self._import_prepared_button.clicked.connect(self._run_import_prepared)  # type: ignore[arg-type]
-        self._allow_import_without_model = QCheckBox("Allow import without autotag if model unavailable")
-        self._allow_import_without_model.setChecked(False)
-        self._allow_import_without_model.toggled.connect(self.refresh_enabled_state)  # type: ignore[arg-type]
+        self._skip_autotag_checkbox = QCheckBox("Import without autotag")
+        self._skip_autotag_checkbox.setChecked(False)
+        self._skip_autotag_checkbox.toggled.connect(self.refresh_enabled_state)  # type: ignore[arg-type]
         self._delete_duplicates_button = QPushButton("Delete all duplicates")
         self._delete_duplicates_button.setEnabled(False)
         self._delete_duplicates_button.clicked.connect(self._delete_all_duplicates)  # type: ignore[arg-type]
@@ -266,7 +285,7 @@ class ImportPage(QWidget):
         controls.addWidget(self._stop_preimport_button)
         controls.addWidget(self._import_prepared_button)
         controls.addWidget(self._import_button)
-        controls.addWidget(self._allow_import_without_model)
+        controls.addWidget(self._skip_autotag_checkbox)
         controls.addWidget(self._delete_duplicates_button)
         controls.addWidget(self._retry_all_failed_button)
 
@@ -294,34 +313,32 @@ class ImportPage(QWidget):
         config = self._config_service.load()
         errors = self._config_service.validate(config)
         enabled = len(errors) == 0
+        skip_autotag = self._skip_autotag_checkbox.isChecked()
         model_error = ""
-        require_model_ready = not self._allow_import_without_model.isChecked()
-        if enabled and config.ai_api_url and config.ai_model_name:
+        if enabled and not skip_autotag and config.ai_api_url and config.ai_model_name:
             try:
                 provider = get_provider(config.ai_provider)
                 model_status = provider.check_model(config.ai_api_url, config.ai_model_name)
                 model_ready = model_status.connected and model_status.loaded
-                if require_model_ready:
-                    enabled = model_ready
+                enabled = model_ready
                 if not model_ready:
                     model_error = model_status.message or "AI model is not ready."
             except Exception as exc:  # noqa: BLE001
-                if require_model_ready:
-                    enabled = False
+                enabled = False
                 model_error = f"AI model check failed: {exc}"
         self._import_button.setEnabled(enabled)
         if not enabled:
             if errors:
                 self._status.setText("Configure a valid photo library folder on page 1.")
             elif model_error:
-                if require_model_ready:
-                    self._status.setText(f"Model not ready: {model_error}")
-                else:
-                    self._status.setText(f"Model unavailable, autotag will be skipped: {model_error}")
+                self._status.setText(f"Model not ready: {model_error}")
             else:
                 self._status.setText("Import is currently unavailable.")
         else:
-            self._status.setText("Ready to import.")
+            if skip_autotag:
+                self._status.setText("Ready to import (autotag skipped).")
+            else:
+                self._status.setText("Ready to import.")
         self._preimport_button.setEnabled(self._preimport_worker is None and len(errors) == 0)
         self._stop_preimport_button.setEnabled(self._preimport_worker is not None)
         can_resume = self._active_preimport_job_id is not None and self._preimport_worker is None
@@ -363,13 +380,13 @@ class ImportPage(QWidget):
             QMessageBox.warning(self, "Invalid settings", "\n".join(errors))
             self.refresh_enabled_state()
             return
-        if config.ai_api_url and config.ai_model_name:
-            require_model_ready = not self._allow_import_without_model.isChecked()
+        skip_autotag = self._skip_autotag_checkbox.isChecked()
+        if not skip_autotag and config.ai_api_url and config.ai_model_name:
             try:
                 provider = get_provider(config.ai_provider)
                 model_status = provider.check_model(config.ai_api_url, config.ai_model_name)
                 model_ready = model_status.connected and model_status.loaded
-                if require_model_ready and not model_ready:
+                if not model_ready:
                     QMessageBox.warning(
                         self,
                         "Model not ready",
@@ -378,14 +395,13 @@ class ImportPage(QWidget):
                     self.refresh_enabled_state()
                     return
             except Exception as exc:  # noqa: BLE001
-                if require_model_ready:
-                    QMessageBox.warning(
-                        self,
-                        "Model check failed",
-                        f"Cannot verify AI model before import:\n{exc}",
-                    )
-                    self.refresh_enabled_state()
-                    return
+                QMessageBox.warning(
+                    self,
+                    "Model check failed",
+                    f"Cannot verify AI model before import:\n{exc}",
+                )
+                self.refresh_enabled_state()
+                return
 
         folder_tags_map, folder_capture_time_map = self._collect_valid_folder_rules()
 
@@ -397,7 +413,7 @@ class ImportPage(QWidget):
             self._import_service, file_paths, config,
             folder_tags_map,
             folder_capture_time_map,
-            require_model_ready=not self._allow_import_without_model.isChecked(),
+            skip_autotag=skip_autotag,
             parent=self,
         )
         self._import_worker.progress.connect(self._on_import_progress)  # type: ignore[arg-type]
@@ -427,6 +443,7 @@ class ImportPage(QWidget):
             files=file_paths,
             folder_tags_map=folder_tags_map,
             folder_capture_time_map=folder_capture_time_map,
+            skip_autotag=self._skip_autotag_checkbox.isChecked(),
             parent=self,
         )
         self._preimport_worker.progress.connect(self._on_import_progress)  # type: ignore[arg-type]
@@ -449,6 +466,7 @@ class ImportPage(QWidget):
             config,
             mode="resume",
             job_id=self._active_preimport_job_id,
+            skip_autotag=self._skip_autotag_checkbox.isChecked(),
             parent=self,
         )
         self._preimport_worker.progress.connect(self._on_import_progress)  # type: ignore[arg-type]
@@ -676,6 +694,7 @@ class ImportPage(QWidget):
             self._active_preimport_job_id,
             item_id,
             config,
+            skip_autotag=self._skip_autotag_checkbox.isChecked(),
             parent=self,
         )
         self._retry_item_worker.retry_done.connect(self._on_retry_item_done)  # type: ignore[arg-type]
@@ -714,6 +733,7 @@ class ImportPage(QWidget):
             config,
             mode="resume",
             job_id=self._active_preimport_job_id,
+            skip_autotag=self._skip_autotag_checkbox.isChecked(),
             parent=self,
         )
         self._preimport_worker.progress.connect(self._on_import_progress)  # type: ignore[arg-type]
