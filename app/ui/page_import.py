@@ -591,6 +591,7 @@ class ImportPage(QWidget):
             f"Planned: {state.planned}",
             f"Prepared: {state.prepared}",
             f"Failed: {state.failed}",
+            f"Duplicate: {state.duplicate}",
             f"Imported: {state.imported}",
         ]
         return "\n".join(lines)
@@ -640,11 +641,15 @@ class ImportPage(QWidget):
             if item.planned_relative_path:
                 planned_item.setToolTip(item.planned_relative_path)
             capture_item = QTableWidgetItem(item.capture_time_iso or "")
-            capture_item.setFlags(capture_item.flags() | Qt.ItemFlag.ItemIsEditable)
-
             tags_list = json.loads(item.manual_tags_json) if item.manual_tags_json else []
             tags_item = QTableWidgetItem(", ".join(tags_list) if tags_list else "")
-            tags_item.setFlags(tags_item.flags() | Qt.ItemFlag.ItemIsEditable)
+
+            if item.state in ("duplicate", "imported"):
+                capture_item.setFlags(capture_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                tags_item.setFlags(tags_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            else:
+                capture_item.setFlags(capture_item.flags() | Qt.ItemFlag.ItemIsEditable)
+                tags_item.setFlags(tags_item.flags() | Qt.ItemFlag.ItemIsEditable)
 
             autotags_list = json.loads(item.autotags_json) if item.autotags_json else []
             autotags_item = QTableWidgetItem(", ".join(autotags_list) if autotags_list else "-")
@@ -1270,7 +1275,8 @@ class ImportPage(QWidget):
         state = self._preimport_service.get_job_state(self._active_preimport_job_id)
         self._preimport_status.setText(
             f"Pre-import job {state.job_id[:8]} | status={state.status} | "
-            f"planned={state.planned} prepared={state.prepared} failed={state.failed}"
+            f"planned={state.planned} prepared={state.prepared} "
+            f"failed={state.failed} duplicate={state.duplicate}"
         )
 
     def _total_detail_items(self) -> int:

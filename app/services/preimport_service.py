@@ -29,6 +29,7 @@ class PreImportJobState:
     prepared: int
     failed: int
     imported: int
+    duplicate: int = 0
 
 
 @dataclass(slots=True)
@@ -117,7 +118,7 @@ class PreImportService:
                     "SELECT COUNT(1) FROM job_items WHERE job_id = ? AND state = ?",
                     (job_id, state),
                 ).fetchone()[0]
-                for state in ("planned", "prepared", "failed", "imported")
+                for state in ("planned", "prepared", "failed", "imported", "duplicate")
             }
         return PreImportJobState(
             job_id=job_id,
@@ -126,6 +127,7 @@ class PreImportService:
             prepared=counts["prepared"],
             failed=counts["failed"],
             imported=counts["imported"],
+            duplicate=counts["duplicate"],
         )
 
     def list_job_items(self, job_id: str) -> list[PreImportItemReport]:
@@ -223,32 +225,41 @@ class PreImportService:
         try:
             stat = source.stat()
             md5 = self._file_service.compute_md5(source)
-            capture_time = self._metadata_service.resolve_capture_time(source)
-            if capture_time is None:
-                capture_time = self._resolve_capture_time_for_source(source, rules["capture_time"])
-            if capture_time is None and existing_capture_iso:
-                try:
-                    capture_time = datetime.fromisoformat(existing_capture_iso)
-                except ValueError:
-                    pass
-            if capture_time is None:
-                raise RuntimeError("capture time unavailable")
-            rel = self._file_service.build_target_relative_path(capture_time, source.suffix)
-            autotags: list[str] = []
-            if not skip_autotag and self._vision_service and config.ai_api_url and config.ai_model_name:
-                autotags = self._vision_service.generate_autotags(
-                    source, config.ai_api_url, config.ai_model_name, strict=True,
+
+            is_dup = False
+            if config.db_path:
+                lib_db = Path(config.db_path)
+                if lib_db.exists() and self._repository.exists_md5(lib_db, md5):
+                    is_dup = True
+            if is_dup:
+                self._update_item_duplicate(item_id, md5)
+            else:
+                capture_time = self._metadata_service.resolve_capture_time(source)
+                if capture_time is None:
+                    capture_time = self._resolve_capture_time_for_source(source, rules["capture_time"])
+                if capture_time is None and existing_capture_iso:
+                    try:
+                        capture_time = datetime.fromisoformat(existing_capture_iso)
+                    except ValueError:
+                        pass
+                if capture_time is None:
+                    raise RuntimeError("capture time unavailable")
+                rel = self._file_service.build_target_relative_path(capture_time, source.suffix)
+                autotags: list[str] = []
+                if not skip_autotag and self._vision_service and config.ai_api_url and config.ai_model_name:
+                    autotags = self._vision_service.generate_autotags(
+                        source, config.ai_api_url, config.ai_model_name, strict=True,
+                    )
+                self._update_item_prepared(
+                    item_id=item_id,
+                    mtime_ns=stat.st_mtime_ns,
+                    size=stat.st_size,
+                    md5=md5,
+                    capture_time_iso=capture_time.isoformat(),
+                    manual_tags=manual_tags,
+                    autotags=autotags,
+                    planned_relative_path=str(rel),
                 )
-            self._update_item_prepared(
-                item_id=item_id,
-                mtime_ns=stat.st_mtime_ns,
-                size=stat.st_size,
-                md5=md5,
-                capture_time_iso=capture_time.isoformat(),
-                manual_tags=manual_tags,
-                autotags=autotags,
-                planned_relative_path=str(rel),
-            )
         except Exception as exc:  # noqa: BLE001
             self._update_item_failed(item_id, str(exc))
 
@@ -362,6 +373,13 @@ class PreImportService:
             try:
                 stat = source.stat()
                 md5 = self._file_service.compute_md5(source)
+
+                if config.db_path:
+                    db_path = Path(config.db_path)
+                    if db_path.exists() and self._repository.exists_md5(db_path, md5):
+                        self._update_item_duplicate(item_id, md5)
+                        continue
+
                 capture_time = self._metadata_service.resolve_capture_time(source)
                 if capture_time is None:
                     capture_time = self._resolve_capture_time_for_source(source, rules["capture_time"])
@@ -398,8 +416,8 @@ class PreImportService:
         state = self.get_job_state(job_id)
         self._set_job_status(job_id, "ready" if state.planned == 0 else "failed")
         logger.info(
-            "Pre-import finished: job=%s prepared=%d failed=%d",
-            job_id[:8], state.prepared, state.failed,
+            "Pre-import finished: job=%s prepared=%d failed=%d duplicate=%d",
+            job_id[:8], state.prepared, state.failed, state.duplicate,
         )
         return self.get_job_state(job_id)
 
@@ -552,6 +570,19 @@ class PreImportService:
                 WHERE id = ?
                 """,
                 (message, datetime.now().isoformat(timespec="seconds"), item_id),
+            )
+            conn.commit()
+
+    def _update_item_duplicate(self, item_id: int, md5: str) -> None:
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                """
+                UPDATE job_items
+                SET state = 'duplicate', source_md5 = ?, error_message = 'duplicate in library',
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (md5, datetime.now().isoformat(timespec="seconds"), item_id),
             )
             conn.commit()
 
