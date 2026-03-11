@@ -51,6 +51,8 @@ class SearchPage(QWidget):
         self._zoom_factor: float = 1.0
         self._rotation_angle: int = 0
         self._current_pixmap: QPixmap | None = None
+        self._page_size = 500
+        self._results_page = 0
 
         self._build_ui()
 
@@ -156,6 +158,24 @@ class SearchPage(QWidget):
         self._results_table.setColumnWidth(5, 80)
         layout.addWidget(self._results_table, stretch=2)
 
+        page_bar = QHBoxLayout()
+        self._first_page_btn = QPushButton("First")
+        self._prev_page_btn = QPushButton("Prev")
+        self._next_page_btn = QPushButton("Next")
+        self._last_page_btn = QPushButton("Last")
+        self._page_label = QLabel("Page 0 of 0")
+        self._first_page_btn.clicked.connect(lambda: self._go_results_page(0))  # type: ignore[arg-type]
+        self._prev_page_btn.clicked.connect(lambda: self._go_results_page(self._results_page - 1))  # type: ignore[arg-type]
+        self._next_page_btn.clicked.connect(lambda: self._go_results_page(self._results_page + 1))  # type: ignore[arg-type]
+        self._last_page_btn.clicked.connect(lambda: self._go_results_page(self._total_results_pages() - 1))  # type: ignore[arg-type]
+        page_bar.addWidget(self._first_page_btn)
+        page_bar.addWidget(self._prev_page_btn)
+        page_bar.addWidget(self._page_label)
+        page_bar.addWidget(self._next_page_btn)
+        page_bar.addWidget(self._last_page_btn)
+        page_bar.addStretch()
+        layout.addLayout(page_bar)
+
         self._update_nav_state()
 
     # ── Page activation ────────────────────────────────────────
@@ -237,6 +257,7 @@ class SearchPage(QWidget):
         self._results = all_photos
         self._current_index = 0 if all_photos else -1
         self._zoom_factor = 1.0
+        self._results_page = 0
 
         self._populate_results_table()
         self._display_current()
@@ -280,9 +301,24 @@ class SearchPage(QWidget):
     # ── Results table ──────────────────────────────────────────
 
     def _populate_results_table(self) -> None:
+        self._render_results_page()
+
+    def _render_results_page(self) -> None:
         self._results_table.blockSignals(True)
-        self._results_table.setRowCount(len(self._results))
-        for row, photo in enumerate(self._results):
+        self._results_table.clearContents()
+        self._results_table.setRowCount(0)
+
+        total = len(self._results)
+        total_pages = self._total_results_pages()
+        if total_pages > 0 and self._results_page >= total_pages:
+            self._results_page = total_pages - 1
+        start = self._results_page * self._page_size
+        end = min(start + self._page_size, total)
+        page_items = self._results[start:end]
+
+        self._results_table.setRowCount(len(page_items))
+        for row, photo in enumerate(page_items):
+            data_index = start + row
             path_item = QTableWidgetItem(photo.relative_path)
             path_item.setToolTip(photo.relative_path)
             path_item.setFlags(path_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -314,19 +350,20 @@ class SearchPage(QWidget):
             actions_layout.setContentsMargins(0, 0, 0, 0)
             preview_btn = QPushButton("Preview")
             preview_btn.clicked.connect(  # type: ignore[arg-type]
-                lambda _checked=False, r=row: self._preview_row(r)
+                lambda _checked=False, di=data_index: self._preview_row(di)
             )
             actions_layout.addWidget(preview_btn)
             self._results_table.setCellWidget(row, 5, actions)
         self._results_table.blockSignals(False)
+        self._update_results_page_label()
 
     def _on_result_item_changed(self, item: QTableWidgetItem) -> None:
         if item.column() != 2 or self._db_path is None:
             return
-        row = item.row()
-        if row < 0 or row >= len(self._results):
+        data_index = self._results_page * self._page_size + item.row()
+        if data_index < 0 or data_index >= len(self._results):
             return
-        photo = self._results[row]
+        photo = self._results[data_index]
         raw = item.text().strip()
         tags = self._parse_tags(raw) if raw else []
         tags_json = json.dumps(tags, ensure_ascii=False)
@@ -342,7 +379,7 @@ class SearchPage(QWidget):
         item.setToolTip("Double-click to edit tags (comma-separated)")
         self._results_table.blockSignals(False)
         self._index_label.setText(
-            f"Photo {row + 1} of {len(self._results)} — Tags saved"
+            f"Photo {data_index + 1} of {len(self._results)} — Tags saved"
         )
 
     # ── Display area ───────────────────────────────────────────
@@ -354,21 +391,30 @@ class SearchPage(QWidget):
             self._display_current()
             self._update_nav_state()
 
-    def _highlight_result_row(self, row: int) -> None:
+    def _highlight_result_row(self, data_index: int) -> None:
         """Highlight the result row that matches the currently displayed photo."""
+        start = self._results_page * self._page_size
+        end = start + self._results_table.rowCount()
+
+        if 0 <= data_index < len(self._results) and not (start <= data_index < end):
+            target_page = data_index // self._page_size
+            self._results_page = target_page
+            self._render_results_page()
+            start = self._results_page * self._page_size
+
+        table_row = data_index - start if 0 <= data_index < len(self._results) else -1
         highlight_brush = QBrush(QColor(200, 230, 255))
         for r in range(self._results_table.rowCount()):
-            use_highlight = 0 <= row < self._results_table.rowCount() and r == row
             for c in range(5):
                 item = self._results_table.item(r, c)
                 if item:
-                    if use_highlight:
+                    if r == table_row:
                         item.setBackground(highlight_brush)
                     else:
                         item.setData(Qt.ItemDataRole.BackgroundRole, None)
-        if 0 <= row < self._results_table.rowCount():
-            self._results_table.setCurrentCell(row, 2)
-            self._results_table.scrollTo(self._results_table.model().index(row, 0))
+        if 0 <= table_row < self._results_table.rowCount():
+            self._results_table.setCurrentCell(table_row, 2)
+            self._results_table.scrollTo(self._results_table.model().index(table_row, 0))
         else:
             self._results_table.clearSelection()
 
@@ -636,3 +682,32 @@ class SearchPage(QWidget):
             self._update_nav_state()
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Delete failed", str(exc))
+
+    # ── Results pagination ─────────────────────────────────────
+
+    def _total_results_pages(self) -> int:
+        total = len(self._results)
+        if total == 0:
+            return 0
+        return (total - 1) // self._page_size + 1
+
+    def _go_results_page(self, page: int) -> None:
+        max_page = self._total_results_pages()
+        if max_page == 0:
+            return
+        page = max(0, min(page, max_page - 1))
+        if page == self._results_page:
+            return
+        self._results_page = page
+        self._render_results_page()
+
+    def _update_results_page_label(self) -> None:
+        total_pages = self._total_results_pages()
+        if total_pages == 0:
+            self._page_label.setText("Page 0 of 0")
+        else:
+            self._page_label.setText(f"Page {self._results_page + 1} of {total_pages}")
+        self._first_page_btn.setEnabled(self._results_page > 0)
+        self._prev_page_btn.setEnabled(self._results_page > 0)
+        self._next_page_btn.setEnabled(self._results_page < total_pages - 1)
+        self._last_page_btn.setEnabled(self._results_page < total_pages - 1)

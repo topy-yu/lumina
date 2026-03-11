@@ -5,12 +5,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
+    QPlainTextEdit,
     QPushButton,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
 from app.logging_config import LogSignalEmitter
 
 _LOGS_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
+_MAX_LINES = 50_000
+_FLUSH_INTERVAL_MS = 100
 
 
 class LogPage(QWidget):
@@ -26,11 +28,17 @@ class LogPage(QWidget):
         self._emitter = emitter
         self._all_lines: list[str] = []
         self._filter_level = "ALL"
+        self._pending: list[str] = []
 
-        self._log_view = QTextEdit()
+        self._log_view = QPlainTextEdit()
         self._log_view.setReadOnly(True)
-        self._log_view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        self._log_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self._log_view.setMaximumBlockCount(_MAX_LINES)
         self._log_view.setStyleSheet("font-family: Consolas, 'Courier New', monospace; font-size: 12px;")
+
+        self._flush_timer = QTimer(self)
+        self._flush_timer.setInterval(_FLUSH_INTERVAL_MS)
+        self._flush_timer.timeout.connect(self._flush_pending)  # type: ignore[arg-type]
 
         self._level_combo = QComboBox()
         self._level_combo.addItems(["ALL", "DEBUG", "INFO", "WARNING", "ERROR"])
@@ -58,11 +66,25 @@ class LogPage(QWidget):
 
     def _on_new_log(self, message: str) -> None:
         self._all_lines.append(message)
+        if len(self._all_lines) > _MAX_LINES:
+            self._all_lines = self._all_lines[-_MAX_LINES:]
         if self._passes_filter(message):
-            self._log_view.append(message)
-            if self._auto_scroll:
-                scrollbar = self._log_view.verticalScrollBar()
-                scrollbar.setValue(scrollbar.maximum())
+            self._pending.append(message)
+            if not self._flush_timer.isActive():
+                self._flush_timer.start()
+
+    def _flush_pending(self) -> None:
+        self._flush_timer.stop()
+        if not self._pending:
+            return
+        self._log_view.setUpdatesEnabled(False)
+        for line in self._pending:
+            self._log_view.appendPlainText(line)
+        self._pending.clear()
+        self._log_view.setUpdatesEnabled(True)
+        if self._auto_scroll:
+            scrollbar = self._log_view.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
 
     def _passes_filter(self, message: str) -> bool:
         if self._filter_level == "ALL":
@@ -74,16 +96,15 @@ class LogPage(QWidget):
         self._refilter()
 
     def _refilter(self) -> None:
-        self._log_view.clear()
-        for line in self._all_lines:
-            if self._passes_filter(line):
-                self._log_view.append(line)
+        filtered = [line for line in self._all_lines if self._passes_filter(line)]
+        self._log_view.setPlainText("\n".join(filtered))
         if self._auto_scroll:
             scrollbar = self._log_view.verticalScrollBar()
             scrollbar.setValue(scrollbar.maximum())
 
     def _clear_display(self) -> None:
         self._all_lines.clear()
+        self._pending.clear()
         self._log_view.clear()
 
     def _open_log_folder(self) -> None:

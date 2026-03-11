@@ -203,6 +203,8 @@ class ImportPage(QWidget):
         self._preimport_details_active: bool = False
         self._suppress_cell_changed: bool = False
         self._retry_item_worker: _RetryItemWorker | None = None
+        self._page_size = 500
+        self._details_page = 0
 
         self._source_list = QListWidget()
         self._folder_combo = QComboBox()
@@ -308,6 +310,24 @@ class ImportPage(QWidget):
         layout.addWidget(self._preimport_status)
         layout.addWidget(self._summary)
         layout.addWidget(self._details_table)
+
+        page_bar = QHBoxLayout()
+        self._first_page_btn = QPushButton("First")
+        self._prev_page_btn = QPushButton("Prev")
+        self._next_page_btn = QPushButton("Next")
+        self._last_page_btn = QPushButton("Last")
+        self._page_label = QLabel("Page 0 of 0")
+        self._first_page_btn.clicked.connect(lambda: self._go_details_page(0))  # type: ignore[arg-type]
+        self._prev_page_btn.clicked.connect(lambda: self._go_details_page(self._details_page - 1))  # type: ignore[arg-type]
+        self._next_page_btn.clicked.connect(lambda: self._go_details_page(self._details_page + 1))  # type: ignore[arg-type]
+        self._last_page_btn.clicked.connect(lambda: self._go_details_page(self._total_detail_pages() - 1))  # type: ignore[arg-type]
+        page_bar.addWidget(self._first_page_btn)
+        page_bar.addWidget(self._prev_page_btn)
+        page_bar.addWidget(self._page_label)
+        page_bar.addWidget(self._next_page_btn)
+        page_bar.addWidget(self._last_page_btn)
+        page_bar.addStretch()
+        layout.addLayout(page_bar)
 
     def refresh_enabled_state(self) -> None:
         config = self._config_service.load()
@@ -576,8 +596,15 @@ class ImportPage(QWidget):
         return "\n".join(lines)
 
     def _populate_preimport_details(self, items: list[PreImportItemReport]) -> None:
-        self._suppress_cell_changed = True
         self._preimport_details_active = True
+        self._details_page = 0
+        self._render_preimport_page()
+
+    def _render_preimport_page(self) -> None:
+        items = self._latest_preimport_items
+        if items is None:
+            return
+        self._suppress_cell_changed = True
         self._details_table.clearContents()
         self._details_table.setRowCount(0)
         self._details_table.setColumnCount(8)
@@ -593,8 +620,16 @@ class ImportPage(QWidget):
         self._details_table.setColumnWidth(6, 200)
         self._details_table.setColumnWidth(7, 160)
 
-        self._details_table.setRowCount(len(items))
-        for row, item in enumerate(items):
+        total = len(items)
+        total_pages = self._total_detail_pages()
+        if total_pages > 0 and self._details_page >= total_pages:
+            self._details_page = total_pages - 1
+        start = self._details_page * self._page_size
+        end = min(start + self._page_size, total)
+        page_items = items[start:end]
+
+        self._details_table.setRowCount(len(page_items))
+        for row, item in enumerate(page_items):
             state_item = QTableWidgetItem(item.state)
             state_item.setFlags(state_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             source_item = QTableWidgetItem(item.source_path)
@@ -653,14 +688,16 @@ class ImportPage(QWidget):
         has_failed = any(it.state == "failed" for it in items)
         self._retry_all_failed_button.setEnabled(has_failed and self._preimport_worker is None)
         self._suppress_cell_changed = False
+        self._update_page_label()
 
     def _on_details_cell_changed(self, row: int, column: int) -> None:
         if self._suppress_cell_changed or not self._preimport_details_active:
             return
-        if self._latest_preimport_items is None or row >= len(self._latest_preimport_items):
+        data_index = self._details_page * self._page_size + row
+        if self._latest_preimport_items is None or data_index >= len(self._latest_preimport_items):
             return
 
-        item = self._latest_preimport_items[row]
+        item = self._latest_preimport_items[data_index]
         cell = self._details_table.item(row, column)
         if cell is None:
             return
@@ -759,23 +796,21 @@ class ImportPage(QWidget):
         ]
         if summary.aborted:
             lines.append(f"Aborted: {summary.abort_reason or 'yes'}")
-        lines.extend(["", "Details:"])
-        lines.extend(self._format_result(result) for result in summary.results)
         return "\n".join(lines)
 
-    @staticmethod
-    def _format_result(result: FileImportResult) -> str:
-        rel = result.relative_path if result.relative_path else "-"
-        tags = ", ".join(result.applied_tags) if result.applied_tags else "-"
-        auto = ", ".join(result.autotags) if result.autotags else "-"
-        reason = result.reason if result.reason else "-"
-        return f"[{result.status}] {result.source} -> {rel} | tags={tags} | autotags={auto} | {reason}"
-
     def _populate_details(self, summary: ImportSummary, library_root: Path) -> None:
-        self._suppress_cell_changed = True
         self._preimport_details_active = False
         self._latest_preimport_items = None
         self._retry_all_failed_button.setEnabled(False)
+        self._details_page = 0
+        self._render_details_page()
+
+    def _render_details_page(self) -> None:
+        summary = self._latest_summary
+        library_root = self._latest_library_root
+        if summary is None or library_root is None:
+            return
+        self._suppress_cell_changed = True
         self._details_table.clearContents()
         self._details_table.setRowCount(0)
         self._details_table.setColumnCount(7)
@@ -789,9 +824,19 @@ class ImportPage(QWidget):
         self._details_table.setColumnWidth(4, 180)
         self._details_table.setColumnWidth(5, 200)
         self._details_table.setColumnWidth(6, 280)
-        self._details_table.setRowCount(len(summary.results))
+
+        total = len(summary.results)
+        total_pages = self._total_detail_pages()
+        if total_pages > 0 and self._details_page >= total_pages:
+            self._details_page = total_pages - 1
+        start = self._details_page * self._page_size
+        end = min(start + self._page_size, total)
+        page_items = summary.results[start:end]
+
+        self._details_table.setRowCount(len(page_items))
         no_edit = ~Qt.ItemFlag.ItemIsEditable
-        for row, result in enumerate(summary.results):
+        for row, result in enumerate(page_items):
+            data_index = start + row
             status_item = QTableWidgetItem(result.status)
             status_item.setFlags(status_item.flags() & no_edit)
             source_item = QTableWidgetItem(result.source)
@@ -823,15 +868,15 @@ class ImportPage(QWidget):
 
             preview_btn = QPushButton("Preview")
             preview_btn.clicked.connect(  # type: ignore[arg-type]
-                lambda _checked=False, r=row: self._preview_row(r)
+                lambda _checked=False, di=data_index: self._preview_row(di)
             )
             rename_btn = QPushButton("Rename")
             rename_btn.clicked.connect(  # type: ignore[arg-type]
-                lambda _checked=False, r=row: self._rename_row(r)
+                lambda _checked=False, di=data_index: self._rename_row(di)
             )
             delete_btn = QPushButton("Delete")
             delete_btn.clicked.connect(  # type: ignore[arg-type]
-                lambda _checked=False, r=row: self._delete_row(r)
+                lambda _checked=False, di=data_index: self._delete_row(di)
             )
 
             action_target = self._resolve_action_target(result, library_root)
@@ -845,6 +890,7 @@ class ImportPage(QWidget):
             actions_layout.addWidget(delete_btn)
             self._details_table.setCellWidget(row, 6, actions)
         self._suppress_cell_changed = False
+        self._update_page_label()
 
     def _add_folder_option(self, folder: Path) -> None:
         resolved = str(folder.resolve(strict=False))
@@ -1066,7 +1112,7 @@ class ImportPage(QWidget):
             else:
                 result.source = str(new_path)
             result.reason = "renamed by user"
-            self._populate_details(self._latest_summary, self._latest_library_root)
+            self._render_details_page()
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Rename failed", str(exc))
 
@@ -1095,7 +1141,7 @@ class ImportPage(QWidget):
                 result.relative_path = None
             result.status = "deleted"
             result.reason = "deleted by user"
-            self._populate_details(self._latest_summary, self._latest_library_root)
+            self._render_details_page()
             self._refresh_duplicate_delete_state()
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Delete failed", str(exc))
@@ -1141,7 +1187,7 @@ class ImportPage(QWidget):
                 failed += 1
                 result.reason = f"delete failed: {exc}"
 
-        self._populate_details(self._latest_summary, self._latest_library_root)
+        self._render_details_page()
         self._refresh_duplicate_delete_state()
         self._status.setText(f"Deleted {deleted} duplicate file(s); failed {failed}.")
 
@@ -1189,4 +1235,41 @@ class ImportPage(QWidget):
             f"Pre-import job {state.job_id[:8]} | status={state.status} | "
             f"planned={state.planned} prepared={state.prepared} failed={state.failed}"
         )
+
+    def _total_detail_items(self) -> int:
+        if self._preimport_details_active and self._latest_preimport_items is not None:
+            return len(self._latest_preimport_items)
+        if self._latest_summary is not None:
+            return len(self._latest_summary.results)
+        return 0
+
+    def _total_detail_pages(self) -> int:
+        total = self._total_detail_items()
+        if total == 0:
+            return 0
+        return (total - 1) // self._page_size + 1
+
+    def _go_details_page(self, page: int) -> None:
+        max_page = self._total_detail_pages()
+        if max_page == 0:
+            return
+        page = max(0, min(page, max_page - 1))
+        if page == self._details_page:
+            return
+        self._details_page = page
+        if self._preimport_details_active:
+            self._render_preimport_page()
+        else:
+            self._render_details_page()
+
+    def _update_page_label(self) -> None:
+        total_pages = self._total_detail_pages()
+        if total_pages == 0:
+            self._page_label.setText("Page 0 of 0")
+        else:
+            self._page_label.setText(f"Page {self._details_page + 1} of {total_pages}")
+        self._first_page_btn.setEnabled(self._details_page > 0)
+        self._prev_page_btn.setEnabled(self._details_page > 0)
+        self._next_page_btn.setEnabled(self._details_page < total_pages - 1)
+        self._last_page_btn.setEnabled(self._details_page < total_pages - 1)
 
