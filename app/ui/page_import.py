@@ -339,10 +339,10 @@ class ImportPage(QWidget):
                 self._status.setText("Ready to import (autotag skipped).")
             else:
                 self._status.setText("Ready to import.")
-        self._preimport_button.setEnabled(self._preimport_worker is None and len(errors) == 0)
+        self._preimport_button.setEnabled(self._preimport_worker is None and enabled)
         self._stop_preimport_button.setEnabled(self._preimport_worker is not None)
         can_resume = self._active_preimport_job_id is not None and self._preimport_worker is None
-        self._resume_preimport_button.setEnabled(can_resume)
+        self._resume_preimport_button.setEnabled(can_resume and enabled)
         self._import_prepared_button.setEnabled(can_resume and len(errors) == 0)
         self._refresh_preimport_status()
 
