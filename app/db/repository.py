@@ -106,3 +106,19 @@ class PhotoRepository:
                 (new_relative_path, md5),
             )
             conn.commit()
+
+    def update_tags_by_md5(self, db_path: Path, md5: str, tags_json: str) -> None:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE photos SET tags = ? WHERE md5 = ?",
+                (tags_json, md5),
+            )
+            conn.commit()
+
+    def update_autotags_by_md5(self, db_path: Path, md5: str, autotags_json: str) -> None:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE photos SET autotags = ? WHERE md5 = ?",
+                (autotags_json, md5),
+            )
+            conn.commit()

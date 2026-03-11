@@ -2,20 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import tempfile
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import QMimeData, QRect, QSize, QUrl, Qt, Signal
-from PySide6.QtGui import QGuiApplication, QPixmap, QTransform
+from PySide6.QtCore import QMimeData, QUrl, Qt
+from PySide6.QtGui import QBrush, QColor, QGuiApplication, QPixmap, QTransform
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QComboBox,
     QHBoxLayout,
     QLabel,
-    QLayout,
-    QLayoutItem,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -28,175 +26,9 @@ from PySide6.QtWidgets import (
 
 from app.db.repository import PhotoRecord, PhotoRepository
 from app.services.config_service import ConfigService
+from app.ui.widgets import ChipSelector
 
-
-# ── Helper: flow layout ───────────────────────────────────────
-
-
-class _FlowLayout(QLayout):
-    """Layout that arranges widgets left-to-right and wraps to the next row."""
-
-    def __init__(self, parent: QWidget | None = None, spacing: int = 4) -> None:
-        super().__init__(parent)
-        self._items: list[QLayoutItem] = []
-        self.setSpacing(spacing)
-
-    def addItem(self, item: QLayoutItem) -> None:  # noqa: N802
-        self._items.append(item)
-
-    def count(self) -> int:
-        return len(self._items)
-
-    def itemAt(self, index: int) -> QLayoutItem | None:  # noqa: N802
-        return self._items[index] if 0 <= index < len(self._items) else None
-
-    def takeAt(self, index: int) -> QLayoutItem | None:  # noqa: N802
-        return self._items.pop(index) if 0 <= index < len(self._items) else None
-
-    def hasHeightForWidth(self) -> bool:  # noqa: N802
-        return True
-
-    def heightForWidth(self, width: int) -> int:  # noqa: N802
-        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
-
-    def setGeometry(self, rect: QRect) -> None:  # noqa: N802
-        super().setGeometry(rect)
-        self._do_layout(rect, test_only=False)
-
-    def sizeHint(self) -> QSize:  # noqa: N802
-        return self.minimumSize()
-
-    def minimumSize(self) -> QSize:  # noqa: N802
-        size = QSize()
-        for item in self._items:
-            size = size.expandedTo(item.minimumSize())
-        m = self.contentsMargins()
-        return size + QSize(m.left() + m.right(), m.top() + m.bottom())
-
-    def _do_layout(self, rect: QRect, *, test_only: bool) -> int:
-        m = self.contentsMargins()
-        effective = rect.adjusted(m.left(), m.top(), -m.right(), -m.bottom())
-        x = effective.x()
-        y = effective.y()
-        line_height = 0
-        sp = self.spacing()
-
-        for item in self._items:
-            w = item.sizeHint().width()
-            h = item.sizeHint().height()
-            if x + w > effective.right() and line_height > 0:
-                x = effective.x()
-                y += line_height + sp
-                line_height = 0
-            if not test_only:
-                item.setGeometry(QRect(x, y, w, h))
-            x += w + sp
-            line_height = max(line_height, h)
-
-        return y + line_height - rect.y() + m.bottom()
-
-
-# ── Helper: chip-based multi-selector ─────────────────────────
-
-
-class _ChipSelector(QWidget):
-    """Dropdown combo + removable chip tags for multi-selection."""
-
-    selection_changed = Signal()
-
-    _CHIP_STYLE = (
-        "QPushButton { background: #3a7bd5; color: white; border: none; "
-        "border-radius: 10px; padding: 2px 8px; font-size: 12px; }"
-        "QPushButton:hover { background: #c0392b; }"
-    )
-
-    def __init__(self, placeholder: str = "Select...", parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._options: list[str] = []
-        self._selected: list[str] = []
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(2)
-
-        self._combo = QComboBox()
-        self._combo.setPlaceholderText(placeholder)
-        self._combo.setCurrentIndex(-1)
-        self._combo.activated.connect(self._on_picked)  # type: ignore[arg-type]
-        root.addWidget(self._combo)
-
-        self._chips_widget = QWidget()
-        self._chips_layout = _FlowLayout(self._chips_widget, spacing=4)
-        self._chips_layout.setContentsMargins(0, 2, 0, 2)
-        root.addWidget(self._chips_widget)
-
-    # ── public API ─────────────────────────────────────────────
-
-    def set_options(self, options: list[str]) -> None:
-        """Replace available options; selections not in *options* are dropped."""
-        self._options = list(options)
-        valid = set(options)
-        before = list(self._selected)
-        self._selected = [s for s in self._selected if s in valid]
-        self._sync_ui()
-        if self._selected != before:
-            self.selection_changed.emit()
-
-    def selected(self) -> list[str]:
-        return list(self._selected)
-
-    def set_selected(self, items: list[str]) -> None:
-        valid = set(self._options)
-        self._selected = [s for s in items if s in valid]
-        self._sync_ui()
-
-    def clear_all(self) -> None:
-        self._options.clear()
-        self._selected.clear()
-        self._sync_ui()
-
-    # ── internal ───────────────────────────────────────────────
-
-    def _on_picked(self, _index: int) -> None:
-        text = self._combo.currentText()
-        if text and text not in self._selected:
-            self._selected.append(text)
-            self._sync_ui()
-            self.selection_changed.emit()
-        self._combo.setCurrentIndex(-1)
-
-    def _remove_chip(self, text: str) -> None:
-        if text in self._selected:
-            self._selected.remove(text)
-            self._sync_ui()
-            self.selection_changed.emit()
-
-    def _sync_ui(self) -> None:
-        self._combo.blockSignals(True)
-        self._combo.clear()
-        selected_set = set(self._selected)
-        for opt in self._options:
-            if opt not in selected_set:
-                self._combo.addItem(opt)
-        self._combo.setCurrentIndex(-1)
-        self._combo.blockSignals(False)
-
-        while self._chips_layout.count():
-            item = self._chips_layout.takeAt(0)
-            if item and item.widget():
-                item.widget().deleteLater()
-
-        for text in self._selected:
-            chip = QPushButton(f"{text}  ×")
-            chip.setStyleSheet(self._CHIP_STYLE)
-            chip.setCursor(Qt.CursorShape.PointingHandCursor)
-            chip.setFixedHeight(22)
-            chip.clicked.connect(  # type: ignore[arg-type]
-                lambda _checked=False, t=text: self._remove_chip(t)
-            )
-            self._chips_layout.addWidget(chip)
-
-        self._chips_widget.updateGeometry()
+_TAG_SPLIT_RE = re.compile(r"[,，;；]")
 
 
 # ── Search page ───────────────────────────────────────────────
@@ -232,13 +64,13 @@ class SearchPage(QWidget):
 
         level1_col = QVBoxLayout()
         level1_col.addWidget(QLabel("First-level directory:"))
-        self._level1_selector = _ChipSelector("Select first-level...")
+        self._level1_selector = ChipSelector("Select first-level...")
         self._level1_selector.selection_changed.connect(self._on_level1_changed)  # type: ignore[arg-type]
         level1_col.addWidget(self._level1_selector)
 
         level2_col = QVBoxLayout()
         level2_col.addWidget(QLabel("Second-level directory:"))
-        self._level2_selector = _ChipSelector("Select second-level...")
+        self._level2_selector = ChipSelector("Select second-level...")
         level2_col.addWidget(self._level2_selector)
 
         folder_row.addLayout(level1_col)
@@ -311,8 +143,9 @@ class SearchPage(QWidget):
         self._results_table.setHorizontalHeaderLabels(
             ["Path", "Capture Time", "Tags", "Auto Tags", "MD5", "Actions"]
         )
-        self._results_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._results_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self._results_table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
+        self._results_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._results_table.itemChanged.connect(self._on_result_item_changed)  # type: ignore[arg-type]
         self._results_table.verticalHeader().setVisible(False)
         self._results_table.horizontalHeader().setStretchLastSection(True)
         self._results_table.setColumnWidth(0, 220)
@@ -413,7 +246,7 @@ class SearchPage(QWidget):
     def _parse_tags(text: str) -> list[str]:
         tags: list[str] = []
         seen: set[str] = set()
-        for tag in text.split(","):
+        for tag in _TAG_SPLIT_RE.split(text):
             clean = tag.strip()
             if not clean or clean.lower() in seen:
                 continue
@@ -447,26 +280,33 @@ class SearchPage(QWidget):
     # ── Results table ──────────────────────────────────────────
 
     def _populate_results_table(self) -> None:
+        self._results_table.blockSignals(True)
         self._results_table.setRowCount(len(self._results))
         for row, photo in enumerate(self._results):
             path_item = QTableWidgetItem(photo.relative_path)
             path_item.setToolTip(photo.relative_path)
+            path_item.setFlags(path_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self._results_table.setItem(row, 0, path_item)
-            self._results_table.setItem(row, 1, QTableWidgetItem(photo.capture_time or "-"))
+            time_item = QTableWidgetItem(photo.capture_time or "-")
+            time_item.setFlags(time_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self._results_table.setItem(row, 1, time_item)
 
             tags = self._load_json_tags(photo.tags)
             autotags = self._load_json_tags(photo.autotags)
 
-            tags_item = QTableWidgetItem(", ".join(tags) if tags else "-")
-            tags_item.setToolTip(", ".join(tags) if tags else "")
+            tags_item = QTableWidgetItem(", ".join(tags) if tags else "")
+            tags_item.setToolTip("Double-click to edit tags (comma-separated)")
+            tags_item.setFlags(tags_item.flags() | Qt.ItemFlag.ItemIsEditable)
             autotags_item = QTableWidgetItem(", ".join(autotags) if autotags else "-")
             autotags_item.setToolTip(", ".join(autotags) if autotags else "")
+            autotags_item.setFlags(autotags_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
             self._results_table.setItem(row, 2, tags_item)
             self._results_table.setItem(row, 3, autotags_item)
 
             md5_item = QTableWidgetItem(photo.md5[:8] + "…")
             md5_item.setToolTip(photo.md5)
+            md5_item.setFlags(md5_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self._results_table.setItem(row, 4, md5_item)
 
             actions = QWidget()
@@ -478,6 +318,32 @@ class SearchPage(QWidget):
             )
             actions_layout.addWidget(preview_btn)
             self._results_table.setCellWidget(row, 5, actions)
+        self._results_table.blockSignals(False)
+
+    def _on_result_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() != 2 or self._db_path is None:
+            return
+        row = item.row()
+        if row < 0 or row >= len(self._results):
+            return
+        photo = self._results[row]
+        raw = item.text().strip()
+        tags = self._parse_tags(raw) if raw else []
+        tags_json = json.dumps(tags, ensure_ascii=False)
+        try:
+            self._repository.update_tags_by_md5(self._db_path, photo.md5, tags_json)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Save tags failed", str(exc))
+            return
+        photo.tags = tags_json
+        display = ", ".join(tags) if tags else ""
+        self._results_table.blockSignals(True)
+        item.setText(display)
+        item.setToolTip("Double-click to edit tags (comma-separated)")
+        self._results_table.blockSignals(False)
+        self._index_label.setText(
+            f"Photo {row + 1} of {len(self._results)} — Tags saved"
+        )
 
     # ── Display area ───────────────────────────────────────────
 
@@ -488,11 +354,30 @@ class SearchPage(QWidget):
             self._display_current()
             self._update_nav_state()
 
+    def _highlight_result_row(self, row: int) -> None:
+        """Highlight the result row that matches the currently displayed photo."""
+        highlight_brush = QBrush(QColor(200, 230, 255))
+        for r in range(self._results_table.rowCount()):
+            use_highlight = 0 <= row < self._results_table.rowCount() and r == row
+            for c in range(5):
+                item = self._results_table.item(r, c)
+                if item:
+                    if use_highlight:
+                        item.setBackground(highlight_brush)
+                    else:
+                        item.setData(Qt.ItemDataRole.BackgroundRole, None)
+        if 0 <= row < self._results_table.rowCount():
+            self._results_table.setCurrentCell(row, 2)
+            self._results_table.scrollTo(self._results_table.model().index(row, 0))
+        else:
+            self._results_table.clearSelection()
+
     def _display_current(self) -> None:
         if self._current_index < 0 or self._current_index >= len(self._results):
             self._image_label.clear()
             self._image_label.setText("No photo to display")
             self._current_pixmap = None
+            self._highlight_result_row(-1)
             return
 
         assert self._library_root is not None
@@ -503,17 +388,20 @@ class SearchPage(QWidget):
             self._image_label.clear()
             self._image_label.setText(f"File not found: {photo.relative_path}")
             self._current_pixmap = None
+            self._highlight_result_row(self._current_index)
             return
 
         pixmap = QPixmap(str(image_path))
         if pixmap.isNull():
             self._image_label.setText(f"Cannot load: {photo.relative_path}")
             self._current_pixmap = None
+            self._highlight_result_row(self._current_index)
             return
 
         self._current_pixmap = pixmap
         self._rotation_angle = 0
         self._apply_zoom()
+        self._highlight_result_row(self._current_index)
 
     def _apply_zoom(self) -> None:
         if self._current_pixmap is None:

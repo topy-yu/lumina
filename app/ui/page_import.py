@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -31,6 +32,8 @@ from app.services.ai_model_service import get_provider
 from app.services.config_service import AppConfig, ConfigService
 from app.services.photo_import_service import FileImportResult, ImportSummary, PhotoImportService
 from app.services.preimport_service import PreImportItemReport, PreImportJobState, PreImportService
+
+_TAG_SPLIT_RE = re.compile(r"[,，;；]")
 
 
 class _ImportWorker(QThread):
@@ -649,7 +652,7 @@ class ImportPage(QWidget):
             self._preimport_service.update_item_capture_time(item.item_id, text)
             item.capture_time_iso = text if text else None
         elif column == 4:
-            tags = [t.strip() for t in text.split(",") if t.strip()]
+            tags = [t.strip() for t in _TAG_SPLIT_RE.split(text) if t.strip()]
             tags_json = json.dumps(tags, ensure_ascii=False)
             self._preimport_service.update_item_tags(item.item_id, tags_json)
             item.manual_tags_json = tags_json
@@ -863,7 +866,7 @@ class ImportPage(QWidget):
     def _parse_tags(text: str) -> list[str]:
         normalized: list[str] = []
         seen: set[str] = set()
-        for tag in text.split(","):
+        for tag in _TAG_SPLIT_RE.split(text):
             clean = tag.strip()
             if not clean or clean in seen:
                 continue
