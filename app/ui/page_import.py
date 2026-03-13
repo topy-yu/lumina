@@ -693,6 +693,18 @@ class ImportPage(QWidget):
                 )
                 actions_layout.addWidget(retry_btn)
 
+            if item.state == "duplicate" and item.planned_relative_path:
+                lib_preview_btn = QPushButton("Lib Preview")
+                lib_preview_btn.clicked.connect(  # type: ignore[arg-type]
+                    lambda _c=False, rp=item.planned_relative_path: self._preview_library_file(rp)
+                )
+                lib_dir_btn = QPushButton("Lib Dir")
+                lib_dir_btn.clicked.connect(  # type: ignore[arg-type]
+                    lambda _c=False, rp=item.planned_relative_path: self._open_library_dir(rp)
+                )
+                actions_layout.addWidget(lib_preview_btn)
+                actions_layout.addWidget(lib_dir_btn)
+
             self._details_table.setCellWidget(row, 7, actions)
 
         has_failed = any(it.state == "failed" for it in items)
@@ -735,6 +747,25 @@ class ImportPage(QWidget):
             QMessageBox.information(self, "Path missing", "Source path is no longer available.")
             return
         self._open_folder(source if source.is_dir() else source.parent)
+
+    def _preview_library_file(self, relative_path: str) -> None:
+        config = self._config_service.load()
+        lib_root = Path(config.library_root)
+        full = lib_root / relative_path
+        if not full.exists() or not full.is_file():
+            QMessageBox.information(self, "File missing", f"Library file not found:\n{full}")
+            return
+        self._show_preview(full)
+
+    def _open_library_dir(self, relative_path: str) -> None:
+        config = self._config_service.load()
+        lib_root = Path(config.library_root)
+        full = lib_root / relative_path
+        folder = full.parent if full.is_file() else full
+        if not folder.exists():
+            QMessageBox.information(self, "Folder missing", f"Library folder not found:\n{folder}")
+            return
+        self._open_folder(folder)
 
     def _retry_single_item(self, item_id: int) -> None:
         if self._retry_item_worker is not None or self._preimport_worker is not None:
@@ -858,7 +889,8 @@ class ImportPage(QWidget):
             status_item.setFlags(status_item.flags() & no_edit)
             source_item = QTableWidgetItem(result.source)
             source_item.setFlags(source_item.flags() & no_edit)
-            stored_item = QTableWidgetItem(result.relative_path or "-")
+            display_path = result.relative_path or result.library_relative_path or "-"
+            stored_item = QTableWidgetItem(display_path)
             stored_item.setFlags(stored_item.flags() & no_edit)
             tags_item = QTableWidgetItem(", ".join(result.applied_tags) if result.applied_tags else "-")
             tags_item.setFlags(tags_item.flags() & no_edit)
@@ -867,8 +899,8 @@ class ImportPage(QWidget):
             reason_item = QTableWidgetItem(result.reason or "-")
             reason_item.setFlags(reason_item.flags() & no_edit)
             source_item.setToolTip(result.source)
-            if result.relative_path:
-                stored_item.setToolTip(result.relative_path)
+            if result.relative_path or result.library_relative_path:
+                stored_item.setToolTip(display_path)
             if result.autotags:
                 autotags_item.setToolTip(", ".join(result.autotags))
 
@@ -911,6 +943,19 @@ class ImportPage(QWidget):
             actions_layout.addWidget(open_folder_btn)
             actions_layout.addWidget(rename_btn)
             actions_layout.addWidget(delete_btn)
+
+            if result.status == "duplicate" and result.library_relative_path:
+                lib_preview_btn = QPushButton("Lib Preview")
+                lib_preview_btn.clicked.connect(  # type: ignore[arg-type]
+                    lambda _c=False, rp=result.library_relative_path: self._preview_library_file(rp)
+                )
+                lib_dir_btn = QPushButton("Lib Dir")
+                lib_dir_btn.clicked.connect(  # type: ignore[arg-type]
+                    lambda _c=False, rp=result.library_relative_path: self._open_library_dir(rp)
+                )
+                actions_layout.addWidget(lib_preview_btn)
+                actions_layout.addWidget(lib_dir_btn)
+
             self._details_table.setCellWidget(row, 6, actions)
         self._suppress_cell_changed = False
         self._update_page_label()

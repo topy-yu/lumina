@@ -227,12 +227,15 @@ class PreImportService:
             md5 = self._file_service.compute_md5(source)
 
             is_dup = False
+            lib_rel: str | None = None
             if config.db_path:
                 lib_db = Path(config.db_path)
                 if lib_db.exists() and self._repository.exists_md5(lib_db, md5):
+                    existing = self._repository.get_photo(lib_db, md5)
+                    lib_rel = existing.relative_path if existing else None
                     is_dup = True
             if is_dup:
-                self._update_item_duplicate(item_id, md5)
+                self._update_item_duplicate(item_id, md5, lib_rel)
             else:
                 capture_time = self._metadata_service.resolve_capture_time(source)
                 if capture_time is None:
@@ -377,7 +380,9 @@ class PreImportService:
                 if config.db_path:
                     db_path = Path(config.db_path)
                     if db_path.exists() and self._repository.exists_md5(db_path, md5):
-                        self._update_item_duplicate(item_id, md5)
+                        existing = self._repository.get_photo(db_path, md5)
+                        lib_rel = existing.relative_path if existing else None
+                        self._update_item_duplicate(item_id, md5, lib_rel)
                         continue
 
                 capture_time = self._metadata_service.resolve_capture_time(source)
@@ -468,8 +473,13 @@ class PreImportService:
                 progress(f"Import prepared {idx}/{len(rows)}: {source.name}")
 
             if self._repository.exists_md5(db_path, md5):
+                existing = self._repository.get_photo(db_path, md5)
+                lib_rel = existing.relative_path if existing else None
                 summary.duplicates += 1
-                summary.results.append(FileImportResult(source=str(source), status="duplicate"))
+                summary.results.append(FileImportResult(
+                    source=str(source), status="duplicate",
+                    library_relative_path=lib_rel,
+                ))
                 self._delete_item(item_id)
                 continue
 
@@ -573,16 +583,20 @@ class PreImportService:
             )
             conn.commit()
 
-    def _update_item_duplicate(self, item_id: int, md5: str) -> None:
+    def _update_item_duplicate(
+        self, item_id: int, md5: str, library_relative_path: str | None = None,
+    ) -> None:
         with sqlite3.connect(self._db_path) as conn:
             conn.execute(
                 """
                 UPDATE job_items
-                SET state = 'duplicate', source_md5 = ?, error_message = 'duplicate in library',
+                SET state = 'duplicate', source_md5 = ?,
+                    planned_relative_path = ?,
+                    error_message = 'duplicate in library',
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (md5, datetime.now().isoformat(timespec="seconds"), item_id),
+                (md5, library_relative_path, datetime.now().isoformat(timespec="seconds"), item_id),
             )
             conn.commit()
 

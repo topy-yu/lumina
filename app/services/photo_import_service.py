@@ -26,6 +26,7 @@ class FileImportResult:
     reason: str | None = None
     applied_tags: list[str] = field(default_factory=list)
     autotags: list[str] = field(default_factory=list)
+    library_relative_path: str | None = None
 
 
 @dataclass(slots=True)
@@ -119,8 +120,13 @@ class PhotoImportService:
             try:
                 md5 = self._file_service.compute_md5(source)
                 if self._repository.exists_md5(db_path, md5):
+                    existing = self._repository.get_photo(db_path, md5)
+                    lib_rel = existing.relative_path if existing else None
                     summary.duplicates += 1
-                    summary.results.append(FileImportResult(source=str(source), status="duplicate"))
+                    summary.results.append(FileImportResult(
+                        source=str(source), status="duplicate",
+                        library_relative_path=lib_rel,
+                    ))
                     continue
 
                 capture_time = self._metadata_service.resolve_capture_time(source)
