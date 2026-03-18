@@ -271,7 +271,7 @@ class ImportPage(QWidget):
         add_dir_btn = QPushButton("Add folder")
         add_dir_btn.clicked.connect(self._add_folder)  # type: ignore[arg-type]
         clear_btn = QPushButton("Clear")
-        clear_btn.clicked.connect(self._source_list.clear)  # type: ignore[arg-type]
+        clear_btn.clicked.connect(self._clear_all)  # type: ignore[arg-type]
         apply_rule_btn = QPushButton("Apply folder rule")
         apply_rule_btn.clicked.connect(self._apply_folder_rule)  # type: ignore[arg-type]
         remove_rule_btn = QPushButton("Remove selected rule")
@@ -1075,6 +1075,15 @@ class ImportPage(QWidget):
         if isinstance(key, str):
             self._folder_tag_rules.pop(key, None)
             self._folder_capture_time_rules.pop(key, None)
+        self._refresh_rules_list()
+
+    def _clear_all(self) -> None:
+        self._source_list.clear()
+        self._folder_combo.clear()
+        self._tags_input.clear()
+        self._capture_time_input.clear()
+        self._folder_tag_rules.clear()
+        self._folder_capture_time_rules.clear()
         self._refresh_rules_list()
 
     def _clear_rules(self) -> None:
